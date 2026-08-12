@@ -1,0 +1,58 @@
+# Theorem index for BoundedMean.lean.
+#
+# The shape a formalization repository exports for downstream consumers: the
+# declaration, its hypothesis binders, and the axioms the kernel reports for
+# the proof. MAGNET reads this; it never reads Lean.
+#
+# `sorryAx` on the second statement is what makes it come back UNPROVED.
+version: 1
+
+project:
+  name: MAGNET bounded-mean example
+  repository: https://github.com/AIQ-Kitware/aiq-magnet
+  commit: 0000000000000000000000000000000000000000
+  review: draft
+
+theorems:
+  - declaration: MagnetExample.BoundedMean.mean_mem_Icc
+    informal: "The mean of finitely many reals, each within [lo, hi], lies in [lo, hi]."
+    conclusion: "lo <= (sum i, xs i) / n and (sum i, xs i) / n <= hi"
+    file: BoundedMean.lean
+    line: 19
+    axioms: [propext, Classical.choice, Quot.sound]
+    hypotheses:
+      - name: hn
+        informal: "the sample size is positive"
+        lean: "0 < n"
+      - name: hlo
+        informal: "every draw is at least lo"
+        lean: "∀ i, lo ≤ xs i"
+      - name: hhi
+        informal: "every draw is at most hi"
+        lean: "∀ i, xs i ≤ hi"
+      - name: xs
+        informal: "the draws themselves"
+        lean: "Fin n → ℝ"
+        structural: true
+
+  - declaration: MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le
+    informal: >-
+      The sample mean of n i.i.d. draws bounded in [lo, hi] is within epsilon of
+      the population mean except with probability 2 exp(-2 n eps^2 / (hi-lo)^2).
+    conclusion: "P(|sample mean - population mean| >= eps) <= 2 exp(-2 n eps^2 / (hi - lo)^2)"
+    file: BoundedMean.lean
+    line: 35
+    axioms: [propext, Classical.choice, Quot.sound, sorryAx]
+    hypotheses:
+      - name: hn
+        informal: "the sample size is positive"
+        lean: "0 < n"
+      - name: hrange
+        informal: "the bounds are non-degenerate"
+        lean: "lo < hi"
+      - name: hiid
+        informal: "the draws are independent and identically distributed"
+        lean: "IsIID X"
+      - name: hbdd
+        informal: "every draw lies within [lo, hi]"
+        lean: "∀ i ω, X i ω ∈ Set.Icc lo hi"

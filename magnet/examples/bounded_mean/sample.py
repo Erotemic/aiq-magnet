@@ -11,10 +11,9 @@ import random
 
 import kwconf
 
-from magnet.theory import approximates, satisfies
+from magnet.theory import approximates, assumes, satisfies
 
-#: Bounded by construction, which is the one hypothesis this example
-#: discharges rather than merely assuming.
+#: Bounded by construction, which is what discharges `hlo`/`hhi`/`hbdd`.
 POPULATION = tuple(range(101))
 POPULATION_MEAN = sum(POPULATION) / len(POPULATION)
 
@@ -27,14 +26,29 @@ class SampleConfig(kwconf.Config):
     )
 
 
+# `mean_mem_Icc` is discharged outright: the draws come from a bounded range
+# and the size is positive, which is everything the statement asks for.
 @satisfies(
-    'Hygiene.Concentration.mean_within_tolerance::hbdd',
-    informal='the population is the bounded integer range [0, 100]',
+    'MagnetExample.BoundedMean.mean_mem_Icc::hlo',
+    informal='draws come from range(101), so every one is at least 0',
 )
-@approximates(
-    'Hygiene.Concentration.mean_within_tolerance::hn',
-    'medium',
-    informal='a fixed sample size, where the statement is asymptotic in n',
+@satisfies(
+    'MagnetExample.BoundedMean.mean_mem_Icc::hhi',
+    informal='draws come from range(101), so every one is at most 100',
+)
+@satisfies(
+    'MagnetExample.BoundedMean.mean_mem_Icc::hn',
+    informal='the card runs a positive number of draws per job',
+)
+# The concentration statement is where the experiment actually departs.
+@satisfies(
+    'MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hbdd',
+    informal='the same bounded range',
+)
+@assumes(
+    'MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hiid',
+    'high',
+    informal='random.Random is a PRNG; nothing here tests independence',
 )
 def draw(seed: int, size: int) -> float:
     rng = random.Random(seed)

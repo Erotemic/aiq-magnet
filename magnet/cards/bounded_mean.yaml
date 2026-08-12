@@ -1,7 +1,8 @@
 # A card that exercises the whole stack and depends on nothing outside MAGNET.
 #
 #   * a kwdagger DAG -- fan out over seeds, gather into one terminal artifact
-#   * a theory block grounded on the hygiene library MAGNET ships
+#   * a theory block grounded on two real Lean statements, one proved and one
+#     still `sorry`
 #   * hypothesis edges annotated in the node code, collected by the audit
 #
 # Deterministic and offline: the "experiment" is a seeded RNG over a bounded
@@ -11,7 +12,7 @@
 #
 #   python -m magnet.theory.audit \
 #       --source magnet/examples/bounded_mean \
-#       --index magnet/theory/data/hygiene.yaml \
+#       --index magnet/examples/bounded_mean/theory/index.yaml \
 #       --format json > theory-ledger.json
 
 title: "Bounded-mean concentration"
@@ -72,8 +73,10 @@ kwdagger:
 
 theory:
   formalizations:
-    - ../theory/data/hygiene.yaml
+    - ../examples/bounded_mean/theory/index.yaml
   ledger: theory-ledger.json
   grounds:
-    - declaration: Hygiene.Concentration.mean_within_tolerance
-      informal: the claim asserts this bound at a fixed tolerance and sample size
+    - declaration: MagnetExample.BoundedMean.mean_mem_Icc
+      informal: the pooled mean is a mean of draws from a bounded range
+    - declaration: MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le
+      informal: the tolerance assertion is the finite-sample shadow of this bound

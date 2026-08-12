@@ -25,15 +25,14 @@ def prepared(tmp_path):
     source = files('magnet') / 'cards' / 'bounded_mean.yaml'
     card = yaml.safe_load(source.read_text())
 
-    # The theory block's paths are relative to the card. Point the
-    # formalization at the installed hygiene library and the ledger at the one
-    # generated below.
-    hygiene = str(files('magnet') / 'theory' / 'data' / 'hygiene.yaml')
-    card['theory']['formalizations'] = [hygiene]
+    # The theory block's paths are relative to the card. Point them at the
+    # installed index and the ledger generated below.
+    index = str(files('magnet') / 'examples' / 'bounded_mean' / 'theory' / 'index.yaml')
+    card['theory']['formalizations'] = [index]
 
     report = audit(
         sources=[str(files('magnet') / 'examples' / 'bounded_mean')],
-        indexes=[hygiene],
+        indexes=[index],
     )
     (card_dpath / 'theory-ledger.json').write_text(
         json.dumps(report.to_dict(), indent=2, default=str)
@@ -61,14 +60,25 @@ def test_the_dag_runs_and_reports_what_it_assumes(prepared, tmp_path, monkeypatc
     assert terminal['num_samples'] == 5
     assert terminal['draws_per_sample'] == 256
 
-    # And the result says what it is standing on. One hypothesis discharged,
-    # one relaxed, one nobody addressed -- the shape the machinery exists for.
+    # And the result says what it is standing on.
     theory = json.loads((run_dpath / 'theory.json').read_text())
-    (statement,) = theory['coverage']['statements']
-    assert statement['theorem'] == 'Hygiene.Concentration.mean_within_tolerance'
-    assert [e['hypothesis'].split('::')[-1] for e in statement['discharged']] == ['hbdd']
-    assert [e['hypothesis'].split('::')[-1] for e in statement['gaps']] == ['hn']
-    assert [h['name'] for h in statement['unaccounted']] == ['hiid']
+    statements = {s['theorem'].split('.')[-1]: s for s in theory['coverage']['statements']}
+    assert set(statements) == {'mean_mem_Icc', 'abs_sampleMean_sub_mean_le'}
+
+    # The proved statement is fully discharged: bounded draws, positive size.
+    proved = statements['mean_mem_Icc']
+    assert proved['proof'] == 'proved'
+    assert sorted(e['hypothesis'].split('::')[-1] for e in proved['discharged']) == [
+        'hhi', 'hlo', 'hn'
+    ]
+
+    # The one still `sorry` is where the experiment departs, and the card is
+    # standing on it either way.
+    unproved = statements['abs_sampleMean_sub_mean_le']
+    assert unproved['proof'] == 'sorry'
+    assert unproved['extra_axioms'] == ['sorryAx']
+    assert [e['hypothesis'].split('::')[-1] for e in unproved['gaps']] == ['hiid']
+    assert sorted(h['name'] for h in unproved['unaccounted']) == ['hn', 'hrange']
     assert not theory['coverage']['complete']
 
     # The files the runner has always written are still there.
@@ -76,12 +86,16 @@ def test_the_dag_runs_and_reports_what_it_assumes(prepared, tmp_path, monkeypatc
     assert (run_dpath / 'card.yaml').exists()
 
 
-def test_the_edges_live_in_the_node_code_not_the_card():
-    # The card names one theorem and no hypotheses; every relation below comes
-    # from an annotation at the code that does it.
+def test_the_card_names_theorems_and_no_hypotheses():
+    # Every relation in the report comes from an annotation at the code that
+    # does it. If a binder name ever appears in the card, the split has leaked.
     card = yaml.safe_load((files('magnet') / 'cards' / 'bounded_mean.yaml').read_text())
-    declared = card['theory']['grounds']
+    block = json.dumps(card['theory'])
 
-    assert len(declared) == 1
-    assert 'hbdd' not in json.dumps(card['theory'])
-    assert 'hn' not in [g.get('declaration') for g in declared]
+    assert [g['declaration'].split('.')[-1] for g in card['theory']['grounds']] == [
+        'mean_mem_Icc',
+        'abs_sampleMean_sub_mean_le',
+    ]
+    assert '::' not in block
+    for binder in ('hlo', 'hhi', 'hiid', 'hbdd', 'hrange'):
+        assert binder not in block

@@ -1,0 +1,79 @@
+# A card that exercises the whole stack and depends on nothing outside MAGNET.
+#
+#   * a kwdagger DAG -- fan out over seeds, gather into one terminal artifact
+#   * a theory block grounded on the hygiene library MAGNET ships
+#   * hypothesis edges annotated in the node code, collected by the audit
+#
+# Deterministic and offline: the "experiment" is a seeded RNG over a bounded
+# integer range. It exists to be run in CI, not to measure anything.
+#
+# The ledger the theory block names is generated:
+#
+#   python -m magnet.theory.audit \
+#       --source magnet/examples/bounded_mean \
+#       --index magnet/theory/data/hygiene.yaml \
+#       --format json > theory-ledger.json
+
+title: "Bounded-mean concentration"
+description: |
+  The pooled mean of seeded samples from a bounded population lands within a
+  tolerance of the population mean.
+
+  The point of the card is not the arithmetic. It is that the verdict arrives
+  with an account of what it is standing on: the population really is bounded,
+  the sample size really is finite where the statement is asymptotic, and
+  nothing here establishes that the draws are independent.
+
+category: "Evaluation Hygiene"
+version: 1.0
+
+organizations:
+  - Kitware
+
+submitter:
+  name: Kitware TA2 Team
+  email: aiq-ta2@kitware.com
+
+tags:
+  - example
+  - kwdagger
+  - theory
+
+links:
+  - title: "MAGNET"
+    url: "https://github.com/AIQ-Kitware/aiq-magnet"
+    type: "software"
+
+claim:
+  python: |
+    assert abs(pooled_mean - 50.0) < tolerance, (
+        f"pooled mean {pooled_mean:.3f} is more than {tolerance} from 50.0"
+    )
+    assert num_samples >= 4, f"{num_samples} samples is too few to pool"
+
+# `pooled_mean` and `num_samples` come from the terminal node's artifact; only
+# the constant is declared here.
+symbols:
+  tolerance:
+    type: float
+    value: 5.0
+
+kwdagger:
+  pipeline: 'magnet.examples.bounded_mean.pipeline.bounded_mean_pipeline()'
+  terminal_node: summarize
+  matrix:
+    sample.seed:
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+    sample.size: 256
+
+theory:
+  formalizations:
+    - ../theory/data/hygiene.yaml
+  ledger: theory-ledger.json
+  grounds:
+    - declaration: Hygiene.Concentration.mean_within_tolerance
+      informal: the claim asserts this bound at a fixed tolerance and sample size

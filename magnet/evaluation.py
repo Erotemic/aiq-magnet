@@ -30,6 +30,50 @@ DEFAULT_CLAIM_AGGREGATION_STRATEGY = {'type': 'all'}
 DEFAULT_METRIC_AGGREGATION_STRATEGY = {'type': 'mean'}
 
 
+
+def resolve_queue_backend(requested: str | None = None) -> str:
+    """
+    Choose the cmd_queue backend a card's DAG is scheduled onto.
+
+    Args:
+        requested (str | None): an explicit choice. ``None`` reads
+            ``MAGNET_QUEUE_BACKEND``, then falls back to ``'tmux'``.
+
+    Returns:
+        str: a backend cmd_queue reports as available.
+
+    Defaults to ``tmux`` even at size 1: the same jobs run in the same order as
+    ``serial``, but with a live monitor and a separate log per job rather than
+    one interleaved stream. ``serial`` is right for CI and pytest, so an
+    unavailable backend degrades to it with a notice rather than raising.
+
+    Example:
+        >>> from magnet.evaluation import resolve_queue_backend
+        >>> resolve_queue_backend('serial')
+        'serial'
+    """
+    import cmd_queue
+
+    if requested is None:
+        requested = os.environ.get('MAGNET_QUEUE_BACKEND') or 'tmux'
+    requested = requested.strip()
+
+    try:
+        available = set(cmd_queue.Queue.available_backends())
+    except Exception:
+        return requested
+
+    if requested in available:
+        return requested
+    if requested != 'serial':
+        logger.warning(
+            f'queue backend {requested!r} is not available '
+            f'(have: {sorted(available)}); falling back to serial. '
+            'Install tmux for a live monitor and per-job logs.'
+        )
+    return 'serial'
+
+
 class EvaluationConfig(kwconf.Config):
     """
     Resolve an Evaluation Card
@@ -75,6 +119,18 @@ class EvaluationConfig(kwconf.Config):
         parser=str,
         choices=['loky', 'threading', 'multiprocessing'],
         help='Joblib backend used when --jobs is not 1.',
+    )
+
+    queue_backend: str | None = kwconf.Value(
+        None,
+        parser=str,
+        help=(
+            'cmd_queue backend the card DAG is scheduled onto: tmux, serial, '
+            'slurm, airflow. Defaults to $MAGNET_QUEUE_BACKEND, then tmux, '
+            'falling back to serial when unavailable. Prefer tmux even at '
+            'size 1: same jobs in the same order, but with a live monitor and '
+            'a separate log per job instead of one interleaved stream.'
+        ),
     )
 
     verbose: bool = kwconf.Value(
@@ -295,18 +351,50 @@ class EvaluationCard:
                 json.dump(raw_symbol_metadata, f, indent=2, ensure_ascii=False)
 
         if self.has_kwdagger:
-            # Explicit kwdagger pipeline defined
-            # Claim node handles symbols outside of EvaluationCard
-            kwdagger_results, symbols = KWDaggerProcessor(
+            processor = KWDaggerProcessor(
                 self.kwdagger, root_dpath=card_output_path / 'kwdagger'
-            ).collect_results()
+            )
 
-            for sweep in symbols:
-                symbol_with_value = {s: {'value': v} for s, v in sweep.items()}
-                self.symbols.update(symbol_with_value)
-                self.evaluations.extend(
-                    self.dispatch(Symbols.decompose_symbol_defs(self.symbols))
+            if processor.terminal_node:
+                # The pipeline declares a single terminal artifact, so the
+                # DAG is authoritative: bind its payload as symbols and
+                # evaluate the claim exactly once against what the pipeline
+                # computed.  No globbing, no re-running the claim per
+                # rediscovered result.
+                terminal = processor.collect_terminal_result()
+                terminal_symbols = {
+                    name: {'value': value}
+                    for name, value in terminal.items()
+                    if not name.startswith('_')
+                }
+                self.symbols.update(terminal_symbols)
+                self.evaluations = self.dispatch(
+                    Symbols.decompose_symbol_defs(self.symbols)
                 )
+
+                with safer.open(
+                    card_output_path / 'terminal_result.json',
+                    'w',
+                    temp_file=SAFER_USE_TEMPFILE,
+                ) as f:
+                    json.dump(terminal, f, indent=2, ensure_ascii=False)
+                    f.write('\n')
+            else:
+                # Legacy path: no declared terminal node, so results are
+                # rediscovered from the run tree and the claim is replayed
+                # for each one.
+                kwdagger_results, symbols = processor.collect_results()
+
+                for sweep in symbols:
+                    symbol_with_value = {
+                        s: {'value': v} for s, v in sweep.items()
+                    }
+                    self.symbols.update(symbol_with_value)
+                    self.evaluations.extend(
+                        self.dispatch(
+                            Symbols.decompose_symbol_defs(self.symbols)
+                        )
+                    )
 
         elif self.has_pipeline:
             # Implicit pipeline definition needs parsing
@@ -535,9 +623,11 @@ class GenericPipelineProcessor:
         self.dag.build_nx_graphs()
 
     def dispatch(
-        self, backend: str = 'serial', skip_existing: bool = True, **kwargs: Any
+        self, backend: str | None = None, skip_existing: bool = True,
+        **kwargs: Any
     ) -> None:
         self.define_kwdagger()
+        backend = resolve_queue_backend(backend)
 
         kwdagger_params = {'pipeline': self.dag, 'matrix': self.matrix}
 
@@ -649,14 +739,21 @@ class KWDaggerProcessor:
     def __init__(
         self, pipeline_def: Dict[str, Any], root_dpath: ub.Path
     ) -> None:
-        self.spec = pipeline_def
+        # ``terminal_node`` is a MAGNET-level declaration, not something
+        # kwdagger understands, so keep it out of the scheduled spec.
+        self.spec = {
+            k: v for k, v in pipeline_def.items() if k != 'terminal_node'
+        }
+        self.terminal_node = pipeline_def.get('terminal_node')
         self.root_dpath = root_dpath
         self.results = []
         self.symbols = []
 
     def dispatch(
-        self, backend: str = 'serial', skip_existing: bool = True, **kwargs: Any
+        self, backend: str | None = None, skip_existing: bool = True,
+        **kwargs: Any
     ) -> None:
+        backend = resolve_queue_backend(backend)
         kwd_config = ScheduleEvaluationConfig(
             params=self.spec,  # includes pipeline and additional params
             root_dpath=self.root_dpath,
@@ -667,6 +764,90 @@ class KWDaggerProcessor:
         )
 
         self.dag, queue = build_schedule(kwd_config)
+
+    def collect_terminal_result(self) -> Dict[str, Any]:
+        """
+        Load the declared terminal node's primary output.
+
+        A pipeline that declares ``terminal_node`` is stating that one node
+        produces the card's whole result.  Reading that artifact directly
+        keeps the DAG authoritative -- MAGNET does not have to rediscover
+        outputs by globbing the run tree, and the claim is evaluated once,
+        against what the pipeline actually computed.
+
+        Returns:
+            Dict[str, Any]: the parsed terminal artifact.
+
+        Raises:
+            ValueError: if no ``terminal_node`` was declared, or it does not
+                name a node in the pipeline.
+            RuntimeError: if the pipeline produced no terminal artifact, or
+                produced more than one (which means the terminal node fanned
+                out and is therefore not terminal).
+        """
+        if not self.terminal_node:
+            raise ValueError(
+                'collect_terminal_result requires the card to declare '
+                "kwdagger.terminal_node"
+            )
+
+        if not getattr(self, 'dag', None):
+            self.dispatch()
+
+        # build_schedule returns *configured* instances keyed by process id
+        # (``card_summary_id_wyaepu4x46tf``); ``node.name`` is the template
+        # name the card refers to.
+        instances = [
+            node
+            for node in self.dag.nodes.values()
+            if node.name == self.terminal_node
+        ]
+
+        if not instances:
+            available = sorted({node.name for node in self.dag.nodes.values()})
+            raise ValueError(
+                f'terminal_node {self.terminal_node!r} is not a node in the '
+                f'pipeline; available: {available}'
+            )
+        if len(instances) > 1:
+            # More than one configured instance means the node is still
+            # parameterized by something swept, so it summarizes a slice
+            # rather than the card.  Catching it here -- before reading any
+            # artifact -- is better than silently reporting a partial
+            # result as the whole finding.
+            raise RuntimeError(
+                f'terminal_node {self.terminal_node!r} has '
+                f'{len(instances)} configured instances, so it is not '
+                f'terminal.  Gather its inputs (or drop its swept '
+                f'parameters) so exactly one instance remains.'
+            )
+
+        node = instances[0]
+        out_fname = node.out_paths[node.primary_out_key]
+
+        node_dpath = self.root_dpath / self.terminal_node
+        found = sorted(node_dpath.glob(f'*/{out_fname}'))
+
+        if not found:
+            raise RuntimeError(
+                f'terminal node {self.terminal_node!r} produced no '
+                f'{out_fname} under {node_dpath}.  The pipeline likely '
+                f'failed upstream; inspect the kwdagger run directory.'
+            )
+        if len(found) > 1:
+            raise RuntimeError(
+                f'terminal node {self.terminal_node!r} produced '
+                f'{len(found)} artifacts under {node_dpath}, but the DAG '
+                f'configured only one instance.  Stale output from an '
+                f'earlier run with different parameters is the usual '
+                f'cause. Found: {[str(p) for p in found]}'
+            )
+
+        with open(found[0], 'r') as file:
+            payload = json.load(file)
+
+        payload.setdefault('_terminal_artifact_fpath', str(found[0]))
+        return payload
 
     def collect_results(self) -> Tuple[List[str], List[Any]]:
         if not self.results:
@@ -1138,6 +1319,12 @@ def main(argv: Optional[List[str]] = None, **kwargs: Any) -> None:
     card = EvaluationCard(args.path, args.output_path, validate=validate)
     if args.override is not None:
         card.replace(args.override)
+
+    if args.queue_backend:
+        # One source of truth: the resolver reads this, and so does any nested
+        # dispatch. Threading a parameter through evaluate() would miss the
+        # dispatch calls that run from collect_terminal_result().
+        os.environ['MAGNET_QUEUE_BACKEND'] = args.queue_backend
 
     card.evaluate(
         jobs=args.jobs,

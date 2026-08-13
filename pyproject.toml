@@ -56,6 +56,10 @@ optional-dependencies.docs = [
 optional-dependencies.optional = [ "gcsfs>=2024.9", "plotly>=6.5.2" ]
 optional-dependencies.tests = [
   "coverage>=7.3",
+  # Supplies the deterministic mock inference endpoint the
+  # held_out_model card answers against. Test-only: nothing in the
+  # package imports it.
+  "infer-stack",
   "pytest>=8.1.1",
   "pytest-cov>=3",
   "xdoctest>=1.2",

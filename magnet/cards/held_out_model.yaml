@@ -1,0 +1,133 @@
+# Predict a model's accuracy on questions it was never scored on.
+#
+# The BAA's Phase-1 experimental design in miniature, and the only card here
+# that puts an inference endpoint, a kwdagger DAG and a theory ledger in the
+# same run:
+#
+#   * a cohort of three models answering a shared question pool, over an
+#     OpenAI-compatible endpoint (infer-stack's deterministic mock, so no GPU,
+#     no key, no network)
+#   * two levels of gather -- shards fan in per model, then the cohort fans in
+#   * leave-one-model-out: predict each model's accuracy on the half it was
+#     not observed on, and score it against the 5% figure
+#   * a Hoeffding half-width from the Lean statement, reported alongside, so
+#     the card says what the theory actually certifies at this sample size
+#
+# The ledger the theory block names is generated:
+#
+#   python -m magnet.theory.audit \
+#       --source magnet/examples/held_out_model \
+#       --index magnet/examples/held_out_model/theory/index.yaml \
+#       --format json > theory-ledger.json
+
+title: "Held-out model accuracy prediction"
+description: |
+  Three models answer a pool of questions. Each model's questions are split
+  into a calibration half and an evaluation half. For each model in turn we
+  hide its evaluation half, predict that accuracy from its calibration half
+  and from what the rest of the cohort did on both halves, and compare the
+  prediction against the truth.
+
+  This is the shape the BAA asks for at Phase 1: given an evaluation result,
+  predict performance on non-evaluated scenarios, to within 5%, on at least
+  two models.
+
+  The card reports two numbers that are easy to confuse and should not be.
+  The first is empirical: how far the predictions actually landed from the
+  truth. The second is what the theory licenses -- the Hoeffding half-width
+  at this many questions -- which is the width of the interval a guarantee
+  could be stated over, whatever the point estimates happened to do.
+
+  What the run cannot tell you is whether the transfer across models is
+  sound. The statement it leans on wants the held-out model to be
+  exchangeable with the cohort it was predicted from, and three simulated
+  models over one shared difficulty function are exchangeable by
+  construction. Real architectures are the open question. That gap is
+  recorded in theory.json rather than argued away.
+
+  The endpoint is a simulator. These numbers describe it, not any model.
+
+category: "Evaluation Hygiene"
+version: 1.0
+
+organizations:
+  - Kitware
+
+submitter:
+  name: Kitware TA2 Team
+  email: aiq-ta2@kitware.com
+
+tags:
+  - example
+  - kwdagger
+  - theory
+  - instance-prediction
+  - leave-one-out
+
+links:
+  - title: "MAGNET"
+    url: "https://github.com/AIQ-Kitware/aiq-magnet"
+    type: "software"
+  - title: "AIQ BAA HR001124S0029"
+    url: "https://sam.gov/opp/6e2e2b41d5e4443a9b1a3e0e07b0f24f/view"
+    type: "publication"
+
+claim:
+  python: |
+    # BAA Fig. 2, Phase 1: quantify generalization within 5% of reference, and
+    # meet the criterion on at least two models.
+    assert num_models >= 3, (
+        f"leave-one-model-out needs a cohort of at least 3, got {num_models}"
+    )
+    assert num_within_tolerance >= min_models_within, (
+        f"only {num_within_tolerance} of {num_models} models predicted within "
+        f"{tolerance}; the metric asks for {min_models_within}"
+    )
+    assert max_abs_error <= tolerance, (
+        f"worst held-out prediction was off by {max_abs_error:.4f}, "
+        f"over the {tolerance} tolerance"
+    )
+    # And the limit side: at this many questions, is the interval the theory
+    # certifies already tight enough to be worth stating? If this fails the
+    # predictions may still be good -- but nothing has been guaranteed.
+    assert certifies_tolerance, (
+        f"the certified half-width is {certified_halfwidth:.4f} at delta="
+        f"{delta}, wider than the {tolerance} tolerance; the evaluation half "
+        f"is too small for the bound to say anything useful"
+    )
+
+# `num_models`, `max_abs_error`, `num_within_tolerance`, `certified_halfwidth`,
+# `certifies_tolerance`, `tolerance` and `delta` all come from the terminal
+# node's artifact. Only the claim's own threshold is declared here.
+symbols:
+  min_models_within:
+    type: int
+    value: 2
+
+kwdagger:
+  pipeline: 'magnet.examples.held_out_model.pipeline.held_out_model_pipeline()'
+  terminal_node: holdout
+  matrix:
+    answer.model_id: &cohort
+      - mock/strong
+      - mock/middling
+      - mock/weak
+    answer.shard_index:
+      - 0
+      - 1
+    answer.num_shards: 2
+    # kwdagger gathers on parameters a node itself carries, so the cohort axis
+    # is declared again on the node the shards fan into.
+    score.model_id: *cohort
+    holdout.tolerance: 0.05
+    holdout.delta: 0.05
+
+theory:
+  formalizations:
+    - ../examples/held_out_model/theory/index.yaml
+  ledger: theory-ledger.json
+  grounds:
+    - declaration: MagnetExample.HeldOutModel.accuracy_mem_Icc
+      informal: every score the card pools is an exact-match 0 or 1
+    - declaration: MagnetExample.HeldOutModel.abs_heldOutError_le
+      informal: the certified half-width the claim checks is this bound, inverted

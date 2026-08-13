@@ -1,0 +1,66 @@
+# Theorem index for HeldOutModel.lean.
+#
+# The shape a formalization repository exports for downstream consumers: the
+# declaration, its hypothesis binders, and the axioms the kernel reports for
+# the proof. MAGNET reads this; it never reads Lean.
+#
+# `sorryAx` on the second statement is what makes it come back UNPROVED.
+version: 1
+
+project:
+  name: MAGNET held-out-model example
+  repository: https://github.com/AIQ-Kitware/aiq-magnet
+  commit: "0000000000000000000000000000000000000000"
+  review: draft
+
+theorems:
+  - declaration: MagnetExample.HeldOutModel.accuracy_mem_Icc
+    informal: "A mean of 0/1 scores lies in [0, 1]."
+    conclusion: "(sum i, scores i) / n in Set.Icc 0 1"
+    file: HeldOutModel.lean
+    line: 30
+    axioms: [propext, Classical.choice, Quot.sound]
+    hypotheses:
+      - name: hn
+        informal: "at least one question was scored"
+        lean: "0 < n"
+      - name: hscore
+        informal: "every score is exactly 0 or 1"
+        lean: "∀ i, scores i = 0 ∨ scores i = 1"
+      - name: scores
+        informal: "the per-question scores"
+        lean: "Fin n → ℝ"
+        structural: true
+
+  - declaration: MagnetExample.HeldOutModel.abs_heldOutError_le
+    informal: >-
+      The accuracy measured on a held-out half of n questions is within
+      sqrt(log(2/delta) / (2n)) of the pool accuracy, except with probability
+      delta.
+    conclusion: "P(|measured - pool| >= sqrt(log(2/delta) / (2n))) <= delta"
+    file: HeldOutModel.lean
+    line: 62
+    axioms: [propext, Classical.choice, Quot.sound, sorryAx]
+    hypotheses:
+      - name: hn
+        informal: "the held-out half is non-empty"
+        lean: "0 < n"
+      - name: hdelta
+        informal: "the failure probability is a probability"
+        lean: "0 < δ ∧ δ < 1"
+      - name: hbdd
+        informal: "every score lies in [0, 1]"
+        lean: "∀ i ω, S i ω ∈ Set.Icc 0 1"
+      - name: hiid
+        informal: "the held-out questions are an independent draw from the pool"
+        lean: "IsIID S"
+      - name: hsplit
+        informal: "the two halves share the pool distribution"
+        lean: "𝔼[S 0] = μ"
+      - name: hexch
+        informal: "the held-out model is exchangeable with the cohort it is predicted from"
+        lean: "Exchangeable S"
+      - name: S
+        informal: "the per-question score process"
+        lean: "Fin n → Ω → ℝ"
+        structural: true

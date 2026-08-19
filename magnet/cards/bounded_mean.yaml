@@ -47,17 +47,27 @@ links:
 
 claim:
   python: |
+    pooled_mean = metrics.summarize.pooled_mean
     assert abs(pooled_mean - 50.0) < tolerance, (
         f"pooled mean {pooled_mean:.3f} is more than {tolerance} from 50.0"
     )
-    assert num_samples >= 4, f"{num_samples} samples is too few to pool"
+    assert metrics.summarize.num_samples >= 4, "too few samples to pool"
 
-# `pooled_mean` and `num_samples` come from the terminal node's artifact; only
-# the constant is declared here.
+# The terminal node's results are addressed by their qualified names; only the
+# constant is declared here.
 symbols:
   tolerance:
     type: float
     value: 5.0
+
+evidence:
+  - measures: metrics.summarize.pooled_mean
+    relation: {within: {of: 50.0, tol: 5.0}}
+    supports: MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le
+    scope: "5 seeds, 256 draws each"
+    relaxes: "the bound is asymptotic; this is a finite sample"
+  - measures: metrics.summarize.num_samples
+    relation: {ge: 4}
 
 kwdagger:
   pipeline: 'magnet.examples.bounded_mean.pipeline.bounded_mean_pipeline()'

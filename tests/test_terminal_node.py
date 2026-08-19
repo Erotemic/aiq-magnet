@@ -1,10 +1,9 @@
 """
 Tests for the ``kwdagger.terminal_node`` declaration.
 
-A card that declares a terminal node is stating that one pipeline node
-produces its whole result.  MAGNET then reads that artifact instead of
-rediscovering outputs by globbing the run tree, and evaluates the claim
-once against what the pipeline actually computed.
+A card that declares a terminal node is stating that node produces its result.
+MAGNET reads each configured instance's artifact instead of globbing the run
+tree, and evaluates the claim once per instance -- one cell of the card.
 """
 
 import json
@@ -39,20 +38,22 @@ def test_absent_terminal_node_keeps_legacy_behaviour():
     assert processor.terminal_node is None
 
 
-def test_collect_terminal_result_requires_a_declaration():
+def test_collect_terminal_results_requires_a_declaration():
     processor = KWDaggerProcessor(
         {'pipeline': 'some.module.some_pipeline()', 'matrix': {}},
         root_dpath=ub.Path('.'),
     )
     with pytest.raises(ValueError, match='terminal_node'):
-        processor.collect_terminal_result()
+        processor.collect_terminal_results()
 
 
 class _FakeNode:
-    def __init__(self, name, out_paths, primary_out_key):
+    def __init__(self, name, dpath, config=None):
         self.name = name
-        self.out_paths = out_paths
-        self.primary_out_key = primary_out_key
+        self.final_node_dpath = ub.Path(dpath)
+        self.out_paths = {'o': 'out.json'}
+        self.primary_out_key = 'o'
+        self.config = config or {}
 
 
 class _FakeDag:
@@ -73,61 +74,78 @@ def _processor_with_dag(nodes, root_dpath, terminal_node='summary'):
     return processor
 
 
-def test_collect_terminal_result_reads_the_declared_artifact():
-    dpath = ub.Path.appdir('magnet/tests/terminal_ok').ensuredir()
+def _fresh(name):
+    dpath = ub.Path.appdir(f'magnet/tests/{name}')
     ub.delete(dpath)
-    dpath.ensuredir()
+    return dpath.ensuredir()
 
-    payload = {'status': 'VERIFIED', 'metrics': {'mae': 0.03}}
-    artifact = (dpath / 'summary' / 'summary_id_abc').ensuredir() / 'out.json'
+
+def _write(dpath, payload):
+    artifact = ub.Path(dpath).ensuredir() / 'out.json'
     artifact.write_text(json.dumps(payload))
+    return artifact
+
+
+def test_results_are_qualified_by_node_name():
+    dpath = _fresh('terminal_ok')
+    artifact = _write(dpath / 'summary' / 'abc', {'mae': 0.03, '_hidden': 1})
 
     processor = _processor_with_dag(
-        {'summary_id_abc': _FakeNode('summary', {'o': 'out.json'}, 'o')},
+        {'summary_id_abc': _FakeNode('summary', dpath / 'summary' / 'abc')},
         root_dpath=dpath,
     )
-    result = processor.collect_terminal_result()
+    cells = processor.collect_terminal_results()
 
-    assert result['status'] == 'VERIFIED'
-    assert result['metrics']['mae'] == 0.03
-    # Provenance for the artifact that produced the card's status.
-    assert result['_terminal_artifact_fpath'] == str(artifact)
+    assert len(cells) == 1
+    # Qualified, so two nodes cannot collide in a claim's namespace.
+    assert cells[0]['results'] == {'metrics.summary.mae': 0.03}
+    assert cells[0]['coords'] == {}
+    assert cells[0]['artifact'] == str(artifact)
+
+
+def test_a_fanned_out_terminal_node_yields_one_cell_each():
+    # Two configured instances is a gather with group_by: each is one cell of
+    # the card, consumed independently.
+    dpath = _fresh('terminal_fanout')
+    _write(dpath / 'summary' / 'a', {'mae': 0.01})
+    _write(dpath / 'summary' / 'b', {'mae': 0.02})
+
+    processor = _processor_with_dag(
+        {
+            'summary_id_a': _FakeNode(
+                'summary', dpath / 'summary' / 'a',
+                {'dataset': 'one', 'workers': 4}),
+            'summary_id_b': _FakeNode(
+                'summary', dpath / 'summary' / 'b',
+                {'dataset': 'two', 'workers': 4}),
+        },
+        root_dpath=dpath,
+    )
+    cells = processor.collect_terminal_results()
+
+    assert len(cells) == 2
+    # Only the parameter that varies is a coordinate; `workers` is shared and
+    # so is not part of what distinguishes a cell.
+    assert sorted(cell['coords']['dataset'] for cell in cells) == ['one', 'two']
+    assert all(set(cell['coords']) == {'dataset'} for cell in cells)
 
 
 def test_unknown_terminal_node_names_the_available_ones():
-    dpath = ub.Path.appdir('magnet/tests/terminal_unknown').ensuredir()
+    dpath = _fresh('terminal_unknown')
     processor = _processor_with_dag(
-        {'other_id_abc': _FakeNode('other', {'o': 'out.json'}, 'o')},
+        {'other_id_abc': _FakeNode('other', dpath / 'other' / 'abc')},
         root_dpath=dpath,
         terminal_node='summary',
     )
     with pytest.raises(ValueError, match="available: \\['other'\\]"):
-        processor.collect_terminal_result()
-
-
-def test_a_fanned_out_terminal_node_is_rejected():
-    # Two configured instances means the node summarizes a slice, not the
-    # card.  Reporting one of them as the whole finding would be wrong.
-    dpath = ub.Path.appdir('magnet/tests/terminal_fanout').ensuredir()
-    processor = _processor_with_dag(
-        {
-            'summary_id_a': _FakeNode('summary', {'o': 'out.json'}, 'o'),
-            'summary_id_b': _FakeNode('summary', {'o': 'out.json'}, 'o'),
-        },
-        root_dpath=dpath,
-    )
-    with pytest.raises(RuntimeError, match='not\\s+terminal'):
-        processor.collect_terminal_result()
+        processor.collect_terminal_results()
 
 
 def test_missing_artifact_points_at_the_run_directory():
-    dpath = ub.Path.appdir('magnet/tests/terminal_missing').ensuredir()
-    ub.delete(dpath)
-    dpath.ensuredir()
-
+    dpath = _fresh('terminal_missing')
     processor = _processor_with_dag(
-        {'summary_id_abc': _FakeNode('summary', {'o': 'out.json'}, 'o')},
+        {'summary_id_abc': _FakeNode('summary', dpath / 'summary' / 'abc')},
         root_dpath=dpath,
     )
-    with pytest.raises(RuntimeError, match='produced no out.json'):
-        processor.collect_terminal_result()
+    with pytest.raises(RuntimeError, match='produced no'):
+        processor.collect_terminal_results()

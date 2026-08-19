@@ -15,6 +15,14 @@ class SubmitterSchema(BaseModel):
 class ClaimSchema(BaseModel):
     python: str
 
+class EvidenceSchema(BaseModel):
+    """One measurement the run supplies, and what it is evidence for."""
+    measures: str
+    relation: dict[str, Any] | None = None
+    scope: str | None = None
+    supports: str | None = None
+    relaxes: str | None = None
+
 class MetricObjective(StrEnum):
     MINIMIZE = 'minimize'
     MAXIMIZE = 'maximize'
@@ -127,7 +135,7 @@ class EvaluationCardSchema(BaseModel):
     # --- Required ---
     title: str
     description: str
-    claim: ClaimSchema
+    claim: ClaimSchema | None = None
     version: str = Field(coerce_numbers_to_str=True)
     organizations: list[str]
     submitter: SubmitterSchema
@@ -140,6 +148,7 @@ class EvaluationCardSchema(BaseModel):
     # --- Evaluation configuration ---
     claim_aggregation_strategy: ClaimAggregationStrategySchema | None = None
     symbols: dict[str, SymbolSchema] | None = None
+    evidence: list[EvidenceSchema] | None = None
 
     # --- What the claim is grounded on (optional) ---
     theory: TheorySchema | None = None
@@ -147,6 +156,12 @@ class EvaluationCardSchema(BaseModel):
     # --- Backend (at most one) ---
     kwdagger: dict[str, Any] | None = None
     pipeline: dict[str, Any] | None = None
+
+    @model_validator(mode='after')
+    def has_finding(self) -> 'EvaluationCardSchema':
+        if self.claim is None and not self.evidence:
+            raise ValueError("a card must define 'claim' or 'evidence'")
+        return self
 
     @model_validator(mode='after')
     def exclusive_backends(self) -> 'EvaluationCardSchema':

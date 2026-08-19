@@ -264,6 +264,7 @@ class EvaluationCard:
         self.pipeline = cfg.get('pipeline')
 
         self.evaluations = []
+        self._run_hash_cached: str | None = None
 
     def status(self) -> str:
         """
@@ -568,11 +569,39 @@ class EvaluationCard:
         logger.info(f'[bold]CARD STATUS:[/bold] {status}')
 
     @property
-    def _run_hash(self) -> str:
-        card_hash = ub.hash_data(self.original_card)[:8]
-        timestamp = datetime.now().strftime('%Y-%m-%d__%H-%M-%S')
+    def _card_hash(self) -> str:
+        """The card's content; the same card is the same id on any day."""
+        return ub.hash_data(self.original_card)[:8]
 
-        return f'{card_hash}_{timestamp}'
+    @property
+    def _run_hash(self) -> str:
+        """
+        This card's directory: ``<card id>_<when it first ran>``.
+
+        Re-running an unchanged card returns the directory it already has,
+        rather than a new one stamped with the current second. That is what
+        lets a pipeline find the cells it already computed -- the DAG's root is
+        inside this directory, so a fresh name every run meant `skip_existing`
+        arrived at an empty tree and refit everything. Editing the card changes
+        the id, which correctly starts a new directory and invalidates the
+        cells.
+
+        Computed once per instance. It used to be recomputed on every read,
+        which was harmless only because there was exactly one reader; a second
+        would have been handed a path that was never created.
+        """
+        if self._run_hash_cached is None:
+            existing = [
+                p for p in sorted(self.output_path.glob(f'{self._card_hash}_*'))
+                if p.is_dir()
+            ]
+            if existing:
+                newest = max(existing, key=lambda p: p.stat().st_mtime)
+                self._run_hash_cached = newest.name
+            else:
+                timestamp = datetime.now().strftime('%Y-%m-%d__%H-%M-%S')
+                self._run_hash_cached = f'{self._card_hash}_{timestamp}'
+        return self._run_hash_cached
 
 
 class GenericPipelineProcessor:

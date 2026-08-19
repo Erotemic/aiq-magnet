@@ -154,18 +154,18 @@ class EvaluationConfig(kwconf.Config):
 # multiprocessing support)
 def _run_one(
     evaluation: 'EvaluationTask', claim_results_path: ub.Path
-) -> Tuple[str, ub.Path]:
+) -> Tuple[str, ub.Path, str, Dict[str, Any]]:
     status, _ = evaluation.execute()
-    results_fpath = (
-        claim_results_path / evaluation._execution_hash / 'verdict.json'
-    )
+    execution_hash = evaluation._execution_hash
+    resolved_symbols = evaluation.log['symbols']
+    results_fpath = claim_results_path / execution_hash / 'verdict.json'
     results_fpath.parent.ensuredir()
 
     with safer.open(results_fpath, 'w', temp_file=SAFER_USE_TEMPFILE) as f:
         json.dump(evaluation.log, f, indent=2, ensure_ascii=False)
         f.write('\n')
 
-    return status, results_fpath
+    return status, results_fpath, execution_hash, resolved_symbols
 
 
 class EvaluationCard:
@@ -426,8 +426,12 @@ class EvaluationCard:
             )
 
         results = []
-        for status, results_fpath in out:
+        resolved_symbols = []
+        claim_hashes = []
+        for status, results_fpath, execution_hash, symbols in out:
             results.append(status)
+            resolved_symbols.append(symbols)
+            claim_hashes.append(execution_hash)
             logger.info(f'Wrote claim output to {results_fpath}')
 
         calculated_metrics = {}
@@ -438,7 +442,7 @@ class EvaluationCard:
             )
             calculated_metrics = _calculate_metrics(
                 metric_definitions,
-                self.evaluations,
+                resolved_symbols,
                 raw_symbol_metadata,
             )
 
@@ -471,7 +475,7 @@ class EvaluationCard:
         aggregate_verdict = {
             'result': card_result,
             'claim_aggregation_strategy': self.claim_aggregation_strategy,
-            'claims': [e._execution_hash for e in self.evaluations],
+            'claims': claim_hashes,
         }
 
         if raw_symbol_metadata and calculated_metrics:
@@ -876,7 +880,7 @@ class EvaluationTask:
         self.claim = claim
         self.symbols = symbols
         self.output_msg = ''
-        self.log = ''
+        self.log: Dict[str, Any] = {}
 
     def execute(self) -> Tuple[str, str]:
         self.symbols.resolve()
@@ -1030,7 +1034,27 @@ class Symbol:
         >>> x = Symbol('x', {'type': "List[int]", 'python': "x = [10]"})
         >>> x.eval()
         [10]
+
+    Example:
+        >>> # `depends` is accepted as a spelling of `depends_on`.
+        >>> from magnet.evaluation import Symbol
+        >>> spec = {'type': 'int', 'python': 'y = x + 1', 'depends': ['x']}
+        >>> Symbol('y', spec).dependencies
+        ['x']
     """
+
+    #: Keys a symbol spec may declare.
+    #:
+    #: ``depends`` is an accepted spelling of ``depends_on``.  Cards are
+    #: hand-written YAML and both spellings are in use; the wrong one used to
+    #: be dropped by ``dict.get``, which left the symbol with no declared
+    #: dependencies at all.  That is silent and order-dependent -- see
+    #: :meth:`Symbols._construct_dependency_order` -- so accept both rather
+    #: than let a card claim a dependency the resolver never sees.
+    KNOWN_SPEC_KEYS = frozenset({
+        'type', 'value', 'sweep', 'python', 'depends_on', 'depends',
+        'metadata',
+    })
 
     def __init__(self, name: str, spec: Dict[str, Any]) -> None:
         self.name = name
@@ -1038,8 +1062,74 @@ class Symbol:
         self.sweep = spec.get('sweep')
         self.type = spec.get('type', 'List[int]')
         self.definition = spec.get('python', '')
-        self.dependencies = spec.get('depends_on', [])
+        self.dependencies = self._resolve_dependencies(name, spec)
         self.metadata = spec.get('metadata')
+
+        unknown = set(spec) - self.KNOWN_SPEC_KEYS
+        if unknown:
+            # Not fatal: an unrecognized key may be forward-compatible or
+            # simply decorative.  But it is never *acted on*, so say so --
+            # a misspelling here is otherwise indistinguishable from a key
+            # that was honored.
+            logger.warning(
+                f'symbol {name!r}: ignoring unrecognized key(s) '
+                f'{sorted(unknown)}; recognized keys are '
+                f'{sorted(self.KNOWN_SPEC_KEYS)}'
+            )
+
+    @staticmethod
+    def _resolve_dependencies(
+        name: str, spec: Dict[str, Any]
+    ) -> List[str]:
+        """
+        Read declared dependencies under either accepted spelling.
+
+        Args:
+            name (str): the symbol's name, for error messages.
+            spec (Dict[str, Any]): the symbol spec as written in the card.
+
+        Returns:
+            List[str]: the declared dependencies, possibly empty.
+
+        Raises:
+            ValueError: if both spellings are present and disagree.
+
+        Example:
+            >>> from magnet.evaluation import Symbol
+            >>> Symbol._resolve_dependencies('y', {'depends_on': ['x']})
+            ['x']
+            >>> Symbol._resolve_dependencies('y', {'depends': ['x']})
+            ['x']
+            >>> Symbol._resolve_dependencies('y', {})
+            []
+            >>> # Both spellings agreeing is redundant but harmless.
+            >>> Symbol._resolve_dependencies(
+            ...     'y', {'depends': ['x'], 'depends_on': ['x']})
+            ['x']
+            >>> # Both spellings disagreeing has no defensible reading.
+            >>> Symbol._resolve_dependencies(
+            ...     'y', {'depends': ['x'], 'depends_on': ['z']})
+            Traceback (most recent call last):
+                ...
+            ValueError: symbol 'y' declares both `depends_on` (['z']) and ...
+        """
+        canonical = spec.get('depends_on')
+        alias = spec.get('depends')
+
+        if canonical is not None and alias is not None:
+            if list(canonical) != list(alias):
+                raise ValueError(
+                    f'symbol {name!r} declares both `depends_on` '
+                    f'({canonical!r}) and `depends` ({alias!r}), and they '
+                    f'disagree. They are the same key; give one of them.'
+                )
+            return list(canonical)
+
+        if canonical is not None:
+            return list(canonical)
+        if alias is not None:
+            return list(alias)
+        return []
 
     def eval(self, context: Dict[str, Any] = {}) -> Any:
         """
@@ -1117,6 +1207,23 @@ class Symbols:
         >>> symbols.resolve()
         >>> symbols()
         {'x': [10]}
+
+    Example:
+        >>> # A declared dependency orders resolution, so a card is free to
+        >>> # write its symbols in any order.  Here the dependent symbol is
+        >>> # declared FIRST, which without the edge would exec `y = x + 1`
+        >>> # against a context that has no `x` yet.
+        >>> from magnet.evaluation import Symbols
+        >>> for spelling in ['depends_on', 'depends']:
+        ...     symbols = Symbols({
+        ...         'y': {'type': 'int', 'python': 'y = x + 1',
+        ...               spelling: ['x']},
+        ...         'x': {'type': 'int', 'value': 1},
+        ...     })
+        ...     symbols.resolve()
+        ...     print(f'{spelling}: {symbols()}')
+        depends_on: {'y': 2, 'x': 1}
+        depends: {'y': 2, 'x': 1}
     """
 
     def __init__(self, symbol_specs: Dict[str, Any]) -> None:
@@ -1267,14 +1374,18 @@ class Metric:
 
 def _calculate_metrics(
     metric_definitions: List[Metric],
-    evaluations: List['EvaluationTask'],
+    evaluations: List['EvaluationTask'] | List[Dict[str, Any]],
     symbol_metadata: Dict[str, Any],
 ) -> Dict[str, MetricValue]:
     calculated_metrics = {}
     for metric in metric_definitions:
         runs = []
         for evaluation in evaluations:
-            symbol_value = evaluation.symbols().get(metric.name)
+            if isinstance(evaluation, dict):
+                symbols = evaluation
+            else:
+                symbols = evaluation.symbols()
+            symbol_value = symbols.get(metric.name)
             if symbol_value is None:
                 logger.error(
                     f'Metric {metric.name} cannot be mapped to a Symbol value'

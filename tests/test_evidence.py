@@ -1,5 +1,5 @@
 """
-Per-cell terminal results, and evidence recorded beside the verdict.
+Per-cell result nodes, and evidence recorded beside the verdict.
 """
 
 import json
@@ -26,7 +26,7 @@ CELLS = [
 @pytest.fixture
 def two_cells(monkeypatch):
     monkeypatch.setattr(
-        KWDaggerProcessor, 'collect_terminal_results', lambda self: CELLS
+        KWDaggerProcessor, 'collect_result_cells', lambda self: CELLS
     )
 
 
@@ -45,7 +45,7 @@ claim:
     assert metrics.summarize.mae < 0.5, f"{dataset}: {metrics.summarize.mae}"
 kwdagger:
   pipeline: 'example.pipeline()'
-  terminal_node: summarize
+  result_node: summarize
 """
 
 
@@ -82,7 +82,7 @@ evidence:
     relaxes: "measured on two datasets only"
 kwdagger:
   pipeline: 'example.pipeline()'
-  terminal_node: summarize
+  result_node: summarize
 """
 
 
@@ -132,7 +132,7 @@ evidence:
     relation: {lt: 0.5}
 kwdagger:
   pipeline: 'example.pipeline()'
-  terminal_node: summarize
+  result_node: summarize
 """
 
 

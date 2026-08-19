@@ -66,25 +66,34 @@ def run_dpath(prepared, tmp_path_factory, request):
     return ub.Path(next(iter(out_dpath.iterdir())))
 
 
+
+def _result_values(run_dpath, node='holdout'):
+    """The single cell's results, with the node qualification stripped."""
+    cells = json.loads((run_dpath / 'result_cells.json').read_text())
+    assert len(cells) == 1
+    prefix = f'metrics.{node}.'
+    return {key[len(prefix):]: value
+            for key, value in cells[0]['results'].items()}
+
 def test_the_cohort_was_actually_asked(run_dpath):
     """Ten jobs ran against the endpoint and fanned in twice."""
-    terminal = json.loads((run_dpath / 'terminal_result.json').read_text())
+    results = _result_values(run_dpath)
 
-    assert terminal['num_models'] == 3
+    assert results['num_models'] == 3
     # Every model answered the same evaluation half, which is what makes the
     # cross-model comparison meaningful in the first place.
-    assert set(terminal['eval_questions_per_model'].values()) == {813}
-    assert sorted(p['model_id'] for p in terminal['predictions']) == [
+    assert set(results['eval_questions_per_model'].values()) == {813}
+    assert sorted(p['model_id'] for p in results['predictions']) == [
         'mock/middling', 'mock/strong', 'mock/weak']
 
 
 def test_the_baa_phase_one_metric(run_dpath):
     """Within 5%, on at least two models. Both halves of BAA Fig. 2."""
-    terminal = json.loads((run_dpath / 'terminal_result.json').read_text())
-    errors = {p['model_id']: p['abs_error'] for p in terminal['predictions']}
+    results = _result_values(run_dpath)
+    errors = {p['model_id']: p['abs_error'] for p in results['predictions']}
 
-    assert terminal['num_within_tolerance'] >= 2
-    assert terminal['max_abs_error'] <= 0.05
+    assert results['num_within_tolerance'] >= 2
+    assert results['max_abs_error'] <= 0.05
 
     # Exact, because the fixture is deterministic. The weak model is hardest
     # to carry across: it has the least headroom under the difficulty drift
@@ -103,13 +112,13 @@ def test_the_certified_limit_is_reported_next_to_the_estimate(run_dpath):
     this is what fails first, which is the honest failure: the predictions
     could still be fine while nothing at all had been guaranteed.
     """
-    terminal = json.loads((run_dpath / 'terminal_result.json').read_text())
+    results = _result_values(run_dpath)
 
-    assert terminal['certified_halfwidth'] == pytest.approx(0.0476, abs=1e-4)
-    assert terminal['certifies_tolerance'] is True
+    assert results['certified_halfwidth'] == pytest.approx(0.0476, abs=1e-4)
+    assert results['certifies_tolerance'] is True
     # The empirical error sits inside the certified interval, as it must if
     # the bound is to mean anything here.
-    assert terminal['max_abs_error'] < terminal['certified_halfwidth']
+    assert results['max_abs_error'] < results['certified_halfwidth']
 
 
 def test_the_result_says_what_it_is_standing_on(run_dpath):

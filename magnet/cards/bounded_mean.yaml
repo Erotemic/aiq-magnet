@@ -1,6 +1,6 @@
 # A card that exercises the whole stack and depends on nothing outside MAGNET.
 #
-#   * a kwdagger DAG -- fan out over seeds, gather into one terminal artifact
+#   * a kwdagger DAG -- fan out over seeds, gather into one result artifact
 #   * a theory block grounded on two real Lean statements, one proved and one
 #     still `sorry`
 #   * hypothesis edges annotated in the node code, collected by the audit
@@ -53,7 +53,7 @@ claim:
     )
     assert metrics.summarize.num_samples >= 4, "too few samples to pool"
 
-# The terminal node's results are addressed by their qualified names; only the
+# The result node's results are addressed by their qualified names; only the
 # constant is declared here.
 symbols:
   tolerance:
@@ -71,7 +71,7 @@ evidence:
 
 kwdagger:
   pipeline: 'magnet.examples.bounded_mean.pipeline.bounded_mean_pipeline()'
-  terminal_node: summarize
+  result_node: summarize
   matrix:
     sample.seed:
       - 1

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pool every sample mean into the card's one terminal artifact.
+Pool every sample mean into the card's one result artifact.
 
 The gather edge hands this node a *manifest* -- one sample path per line --
 rather than the paths themselves, so the command line stays a fixed size

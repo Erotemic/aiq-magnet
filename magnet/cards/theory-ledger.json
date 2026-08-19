@@ -1,0 +1,254 @@
+{
+  "formalizations": [
+    {
+      "name": "MAGNET bounded-mean example",
+      "repository": "https://github.com/AIQ-Kitware/aiq-magnet",
+      "commit": 0,
+      "review": "draft",
+      "statements": 2
+    }
+  ],
+  "ledger": {
+    "annotations": [
+      {
+        "predicate": "satisfies",
+        "ref": "MagnetExample.BoundedMean.mean_mem_Icc::hlo",
+        "ref_expr": "'MagnetExample.BoundedMean.mean_mem_Icc::hlo'",
+        "resolved": true,
+        "form": "decorator",
+        "file": "magnet/examples/bounded_mean/sample.py",
+        "line": 31,
+        "qualname": "draw",
+        "target": "draw",
+        "options": {
+          "informal": "draws come from range(101), so every one is at least 0"
+        },
+        "unreadable_options": []
+      },
+      {
+        "predicate": "satisfies",
+        "ref": "MagnetExample.BoundedMean.mean_mem_Icc::hhi",
+        "ref_expr": "'MagnetExample.BoundedMean.mean_mem_Icc::hhi'",
+        "resolved": true,
+        "form": "decorator",
+        "file": "magnet/examples/bounded_mean/sample.py",
+        "line": 35,
+        "qualname": "draw",
+        "target": "draw",
+        "options": {
+          "informal": "draws come from range(101), so every one is at most 100"
+        },
+        "unreadable_options": []
+      },
+      {
+        "predicate": "satisfies",
+        "ref": "MagnetExample.BoundedMean.mean_mem_Icc::hn",
+        "ref_expr": "'MagnetExample.BoundedMean.mean_mem_Icc::hn'",
+        "resolved": true,
+        "form": "decorator",
+        "file": "magnet/examples/bounded_mean/sample.py",
+        "line": 39,
+        "qualname": "draw",
+        "target": "draw",
+        "options": {
+          "informal": "the card runs a positive number of draws per job"
+        },
+        "unreadable_options": []
+      },
+      {
+        "predicate": "satisfies",
+        "ref": "MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hbdd",
+        "ref_expr": "'MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hbdd'",
+        "resolved": true,
+        "form": "decorator",
+        "file": "magnet/examples/bounded_mean/sample.py",
+        "line": 44,
+        "qualname": "draw",
+        "target": "draw",
+        "options": {
+          "informal": "the same bounded range"
+        },
+        "unreadable_options": []
+      },
+      {
+        "predicate": "assumes",
+        "ref": "MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hiid",
+        "ref_expr": "'MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hiid'",
+        "resolved": true,
+        "form": "decorator",
+        "file": "magnet/examples/bounded_mean/sample.py",
+        "line": 48,
+        "qualname": "draw",
+        "target": "draw",
+        "options": {
+          "severity": "high",
+          "informal": "random.Random is a PRNG; nothing here tests independence"
+        },
+        "unreadable_options": []
+      }
+    ],
+    "errors": []
+  },
+  "issues": [],
+  "basis": {
+    "formalizations": [
+      {
+        "name": "MAGNET bounded-mean example",
+        "repository": "https://github.com/AIQ-Kitware/aiq-magnet",
+        "commit": 0,
+        "review": "draft"
+      }
+    ],
+    "groundings": [],
+    "edges": [
+      {
+        "id": null,
+        "hypothesis": "MagnetExample.BoundedMean.mean_mem_Icc::hlo",
+        "relation": "satisfies",
+        "severity": "none",
+        "kind": null,
+        "review": "draft",
+        "freshness": "current",
+        "site": "draw:31",
+        "anchor": null,
+        "informal": "draws come from range(101), so every one is at least 0",
+        "note": "",
+        "evidence": null
+      },
+      {
+        "id": null,
+        "hypothesis": "MagnetExample.BoundedMean.mean_mem_Icc::hhi",
+        "relation": "satisfies",
+        "severity": "none",
+        "kind": null,
+        "review": "draft",
+        "freshness": "current",
+        "site": "draw:35",
+        "anchor": null,
+        "informal": "draws come from range(101), so every one is at most 100",
+        "note": "",
+        "evidence": null
+      },
+      {
+        "id": null,
+        "hypothesis": "MagnetExample.BoundedMean.mean_mem_Icc::hn",
+        "relation": "satisfies",
+        "severity": "none",
+        "kind": null,
+        "review": "draft",
+        "freshness": "current",
+        "site": "draw:39",
+        "anchor": null,
+        "informal": "the card runs a positive number of draws per job",
+        "note": "",
+        "evidence": null
+      },
+      {
+        "id": null,
+        "hypothesis": "MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hbdd",
+        "relation": "satisfies",
+        "severity": "none",
+        "kind": null,
+        "review": "draft",
+        "freshness": "current",
+        "site": "draw:44",
+        "anchor": null,
+        "informal": "the same bounded range",
+        "note": "",
+        "evidence": null
+      },
+      {
+        "id": null,
+        "hypothesis": "MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hiid",
+        "relation": "assumes",
+        "severity": "high",
+        "kind": null,
+        "review": "draft",
+        "freshness": "current",
+        "site": "draw:48",
+        "anchor": null,
+        "informal": "random.Random is a PRNG; nothing here tests independence",
+        "note": "",
+        "evidence": null
+      }
+    ],
+    "coverage": {
+      "complete": false,
+      "max_severity": "none",
+      "summary": "not grounded on any statement",
+      "statements": [],
+      "dangling": [
+        {
+          "id": null,
+          "hypothesis": "MagnetExample.BoundedMean.mean_mem_Icc::hlo",
+          "relation": "satisfies",
+          "severity": "none",
+          "kind": null,
+          "review": "draft",
+          "freshness": "current",
+          "site": "draw:31",
+          "anchor": null,
+          "informal": "draws come from range(101), so every one is at least 0",
+          "note": "",
+          "evidence": null
+        },
+        {
+          "id": null,
+          "hypothesis": "MagnetExample.BoundedMean.mean_mem_Icc::hhi",
+          "relation": "satisfies",
+          "severity": "none",
+          "kind": null,
+          "review": "draft",
+          "freshness": "current",
+          "site": "draw:35",
+          "anchor": null,
+          "informal": "draws come from range(101), so every one is at most 100",
+          "note": "",
+          "evidence": null
+        },
+        {
+          "id": null,
+          "hypothesis": "MagnetExample.BoundedMean.mean_mem_Icc::hn",
+          "relation": "satisfies",
+          "severity": "none",
+          "kind": null,
+          "review": "draft",
+          "freshness": "current",
+          "site": "draw:39",
+          "anchor": null,
+          "informal": "the card runs a positive number of draws per job",
+          "note": "",
+          "evidence": null
+        },
+        {
+          "id": null,
+          "hypothesis": "MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hbdd",
+          "relation": "satisfies",
+          "severity": "none",
+          "kind": null,
+          "review": "draft",
+          "freshness": "current",
+          "site": "draw:44",
+          "anchor": null,
+          "informal": "the same bounded range",
+          "note": "",
+          "evidence": null
+        },
+        {
+          "id": null,
+          "hypothesis": "MagnetExample.BoundedMean.abs_sampleMean_sub_mean_le::hiid",
+          "relation": "assumes",
+          "severity": "high",
+          "kind": null,
+          "review": "draft",
+          "freshness": "current",
+          "site": "draw:48",
+          "anchor": null,
+          "informal": "random.Random is a PRNG; nothing here tests independence",
+          "note": "",
+          "evidence": null
+        }
+      ]
+    }
+  }
+}

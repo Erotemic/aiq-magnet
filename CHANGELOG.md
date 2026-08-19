@@ -16,7 +16,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
-* A `terminal_node` with more than one configured instance is now one cell of
+* A `result_node` with more than one configured instance is now one cell of
   the card each, evaluated and written separately, rather than an error. The
   parameters that distinguish the instances bind as symbols.
 * Terminal artifacts are read from each configured instance's own directory

@@ -3,7 +3,7 @@ End to end, on nothing but MAGNET: a kwdagger DAG whose result reports what it
 is standing on.
 
 Slower than a unit test because it schedules and runs real jobs, which is the
-point -- the parts this covers (gather fan-in, terminal_node, the audit, the
+point -- the parts this covers (gather fan-in, result_node, the audit, the
 ledger, theory.json) have unit tests that all pass while the chain is broken.
 """
 import json
@@ -55,10 +55,12 @@ def test_the_dag_runs_and_reports_what_it_assumes(prepared, tmp_path, monkeypatc
 
     run_dpath = ub.Path(next(iter((tmp_path / 'runs').iterdir())))
 
-    # The DAG really ran: five sample jobs fanned into one terminal artifact.
-    terminal = json.loads((run_dpath / 'terminal_result.json').read_text())
-    assert terminal['num_samples'] == 5
-    assert terminal['draws_per_sample'] == 256
+    # The DAG really ran: five sample jobs fanned into one result artifact.
+    cells = json.loads((run_dpath / 'result_cells.json').read_text())
+    assert len(cells) == 1, 'group_by=[] gathers everything into one cell'
+    results = cells[0]['results']
+    assert results['metrics.summarize.num_samples'] == 5
+    assert results['metrics.summarize.draws_per_sample'] == 256
 
     # And the result says what it is standing on.
     theory = json.loads((run_dpath / 'theory.json').read_text())

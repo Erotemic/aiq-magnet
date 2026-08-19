@@ -3,7 +3,7 @@ The bounded-mean DAG: fan out over seeds, gather into one artifact.
 
     sample[seed]      one job per seed
         | gather group_by=[] order_by=[seed]
-    summarize         the terminal node the card reads
+    summarize         the result node the card reads
 """
 import kwdagger
 

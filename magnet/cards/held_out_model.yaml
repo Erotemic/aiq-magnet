@@ -76,29 +76,31 @@ claim:
   python: |
     # BAA Fig. 2, Phase 1: quantify generalization within 5% of reference, and
     # meet the criterion on at least two models.
+    holdout = metrics.holdout
+    num_models = holdout.num_models
+    tolerance = holdout.tolerance
     assert num_models >= 3, (
         f"leave-one-model-out needs a cohort of at least 3, got {num_models}"
     )
-    assert num_within_tolerance >= min_models_within, (
-        f"only {num_within_tolerance} of {num_models} models predicted within "
-        f"{tolerance}; the metric asks for {min_models_within}"
+    assert holdout.num_within_tolerance >= min_models_within, (
+        f"only {holdout.num_within_tolerance} of {num_models} models predicted "
+        f"within {tolerance}; the metric asks for {min_models_within}"
     )
-    assert max_abs_error <= tolerance, (
-        f"worst held-out prediction was off by {max_abs_error:.4f}, "
+    assert holdout.max_abs_error <= tolerance, (
+        f"worst held-out prediction was off by {holdout.max_abs_error:.4f}, "
         f"over the {tolerance} tolerance"
     )
     # And the limit side: at this many questions, is the interval the theory
     # certifies already tight enough to be worth stating? If this fails the
     # predictions may still be good -- but nothing has been guaranteed.
-    assert certifies_tolerance, (
-        f"the certified half-width is {certified_halfwidth:.4f} at delta="
-        f"{delta}, wider than the {tolerance} tolerance; the evaluation half "
-        f"is too small for the bound to say anything useful"
+    assert holdout.certifies_tolerance, (
+        f"the certified half-width is {holdout.certified_halfwidth:.4f} at "
+        f"delta={holdout.delta}, wider than the {tolerance} tolerance; the "
+        f"evaluation half is too small for the bound to say anything useful"
     )
 
-# `num_models`, `max_abs_error`, `num_within_tolerance`, `certified_halfwidth`,
-# `certifies_tolerance`, `tolerance` and `delta` all come from the terminal
-# node's artifact. Only the claim's own threshold is declared here.
+# Everything the claim measures comes from the result node, addressed by its
+# qualified name. Only the claim's own threshold is declared here.
 symbols:
   min_models_within:
     type: int
@@ -106,7 +108,7 @@ symbols:
 
 kwdagger:
   pipeline: 'magnet.examples.held_out_model.pipeline.held_out_model_pipeline()'
-  terminal_node: holdout
+  result_node: holdout
   matrix:
     answer.model_id: &cohort
       - mock/strong

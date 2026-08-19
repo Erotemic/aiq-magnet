@@ -1,7 +1,7 @@
 """
-Tests for the ``kwdagger.terminal_node`` declaration.
+Tests for the ``kwdagger.result_node`` declaration.
 
-A card that declares a terminal node is stating that node produces its result.
+A card that declares a result node is stating that node produces its result.
 MAGNET reads each configured instance's artifact instead of globbing the run
 tree, and evaluates the claim once per instance -- one cell of the card.
 """
@@ -14,37 +14,37 @@ import ubelt as ub
 from magnet.evaluation import KWDaggerProcessor
 
 
-def test_terminal_node_is_kept_out_of_the_scheduled_spec():
-    # kwdagger does not know about terminal_node; passing it through would
+def test_result_node_is_kept_out_of_the_scheduled_spec():
+    # kwdagger does not know about result_node; passing it through would
     # be rejected by the schedule config.
     processor = KWDaggerProcessor(
         {
             'pipeline': 'some.module.some_pipeline()',
             'matrix': {'a.b': [1, 2]},
-            'terminal_node': 'summary',
+            'result_node': 'summary',
         },
         root_dpath=ub.Path('.'),
     )
-    assert processor.terminal_node == 'summary'
-    assert 'terminal_node' not in processor.spec
+    assert processor.result_node == 'summary'
+    assert 'result_node' not in processor.spec
     assert set(processor.spec) == {'pipeline', 'matrix'}
 
 
-def test_absent_terminal_node_keeps_legacy_behaviour():
+def test_absent_result_node_keeps_legacy_behaviour():
     processor = KWDaggerProcessor(
         {'pipeline': 'some.module.some_pipeline()', 'matrix': {}},
         root_dpath=ub.Path('.'),
     )
-    assert processor.terminal_node is None
+    assert processor.result_node is None
 
 
-def test_collect_terminal_results_requires_a_declaration():
+def test_collect_result_cells_requires_a_declaration():
     processor = KWDaggerProcessor(
         {'pipeline': 'some.module.some_pipeline()', 'matrix': {}},
         root_dpath=ub.Path('.'),
     )
-    with pytest.raises(ValueError, match='terminal_node'):
-        processor.collect_terminal_results()
+    with pytest.raises(ValueError, match='result_node'):
+        processor.collect_result_cells()
 
 
 class _FakeNode:
@@ -61,12 +61,12 @@ class _FakeDag:
         self.nodes = nodes
 
 
-def _processor_with_dag(nodes, root_dpath, terminal_node='summary'):
+def _processor_with_dag(nodes, root_dpath, result_node='summary'):
     processor = KWDaggerProcessor(
         {
             'pipeline': 'some.module.some_pipeline()',
             'matrix': {},
-            'terminal_node': terminal_node,
+            'result_node': result_node,
         },
         root_dpath=root_dpath,
     )
@@ -87,14 +87,14 @@ def _write(dpath, payload):
 
 
 def test_results_are_qualified_by_node_name():
-    dpath = _fresh('terminal_ok')
+    dpath = _fresh('result_ok')
     artifact = _write(dpath / 'summary' / 'abc', {'mae': 0.03, '_hidden': 1})
 
     processor = _processor_with_dag(
         {'summary_id_abc': _FakeNode('summary', dpath / 'summary' / 'abc')},
         root_dpath=dpath,
     )
-    cells = processor.collect_terminal_results()
+    cells = processor.collect_result_cells()
 
     assert len(cells) == 1
     # Qualified, so two nodes cannot collide in a claim's namespace.
@@ -103,10 +103,10 @@ def test_results_are_qualified_by_node_name():
     assert cells[0]['artifact'] == str(artifact)
 
 
-def test_a_fanned_out_terminal_node_yields_one_cell_each():
+def test_a_fanned_out_result_node_yields_one_cell_each():
     # Two configured instances is a gather with group_by: each is one cell of
     # the card, consumed independently.
-    dpath = _fresh('terminal_fanout')
+    dpath = _fresh('result_fanout')
     _write(dpath / 'summary' / 'a', {'mae': 0.01})
     _write(dpath / 'summary' / 'b', {'mae': 0.02})
 
@@ -121,7 +121,7 @@ def test_a_fanned_out_terminal_node_yields_one_cell_each():
         },
         root_dpath=dpath,
     )
-    cells = processor.collect_terminal_results()
+    cells = processor.collect_result_cells()
 
     assert len(cells) == 2
     # Only the parameter that varies is a coordinate; `workers` is shared and
@@ -130,22 +130,22 @@ def test_a_fanned_out_terminal_node_yields_one_cell_each():
     assert all(set(cell['coords']) == {'dataset'} for cell in cells)
 
 
-def test_unknown_terminal_node_names_the_available_ones():
-    dpath = _fresh('terminal_unknown')
+def test_unknown_result_node_names_the_available_ones():
+    dpath = _fresh('result_unknown')
     processor = _processor_with_dag(
         {'other_id_abc': _FakeNode('other', dpath / 'other' / 'abc')},
         root_dpath=dpath,
-        terminal_node='summary',
+        result_node='summary',
     )
     with pytest.raises(ValueError, match="available: \\['other'\\]"):
-        processor.collect_terminal_results()
+        processor.collect_result_cells()
 
 
 def test_missing_artifact_points_at_the_run_directory():
-    dpath = _fresh('terminal_missing')
+    dpath = _fresh('result_missing')
     processor = _processor_with_dag(
         {'summary_id_abc': _FakeNode('summary', dpath / 'summary' / 'abc')},
         root_dpath=dpath,
     )
     with pytest.raises(RuntimeError, match='produced no'):
-        processor.collect_terminal_results()
+        processor.collect_result_cells()

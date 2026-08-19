@@ -4,7 +4,7 @@ Draw from a bounded population and write the sample mean.
 
 One job per seed. Nothing here reads the network or a dataset: the point is a
 DAG that is cheap enough to run in CI while having the same shape as a real
-card -- fan out, gather, one terminal artifact.
+card -- fan out, gather, one result artifact.
 """
 import json
 import random

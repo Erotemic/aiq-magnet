@@ -2,7 +2,7 @@
 """
 Leave one model out, predict its accuracy on questions it was not scored on.
 
-The card's terminal artifact. For each model in turn: hide its evaluation
+The card's result artifact. For each model in turn: hide its evaluation
 half, predict that accuracy from its calibration half plus what the *rest* of
 the cohort did on both halves, then compare against the truth.
 
@@ -29,7 +29,7 @@ class HoldoutConfig(kwconf.Config):
     delta: float = kwconf.Value(
         0.05, help='failure probability the certified limit is allowed')
     out_fpath: str = kwconf.Value(
-        'holdout.json', help='the terminal artifact the card reads',
+        'holdout.json', help='the result artifact the card reads',
         tags=['out_path', 'primary'])
 
 

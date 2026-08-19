@@ -358,10 +358,10 @@ class EvaluationCard:
                 self.kwdagger, root_dpath=card_output_path / 'kwdagger'
             )
 
-            if processor.terminal_node:
-                # The DAG is authoritative: each terminal instance is one cell
+            if processor.result_node:
+                # The DAG is authoritative: each result instance is one cell
                 # of the card, evaluated against what that instance computed.
-                cells = processor.collect_terminal_results()
+                cells = processor.collect_result_cells()
 
                 for cell in cells:
                     # Coordinates bind as ordinary symbols so each cell hashes
@@ -371,7 +371,7 @@ class EvaluationCard:
                     for name, value in cell['coords'].items():
                         if name in cell_symbols:
                             raise ValueError(
-                                f'terminal node parameter {name!r} collides '
+                                f'result node parameter {name!r} collides '
                                 f'with a card symbol of the same name'
                             )
                         cell_symbols[name] = {'value': value}
@@ -382,14 +382,14 @@ class EvaluationCard:
                     ))
 
                 with safer.open(
-                    card_output_path / 'terminal_result.json',
+                    card_output_path / 'result_cells.json',
                     'w',
                     temp_file=SAFER_USE_TEMPFILE,
                 ) as f:
                     json.dump(cells, f, indent=2, ensure_ascii=False)
                     f.write('\n')
             else:
-                # No declared terminal node: results are rediscovered from the
+                # No declared result node: results are rediscovered from the
                 # run tree and the claim is replayed for each one.
                 kwdagger_results, symbols = processor.collect_results()
 
@@ -776,12 +776,12 @@ class KWDaggerProcessor:
     def __init__(
         self, pipeline_def: Dict[str, Any], root_dpath: ub.Path
     ) -> None:
-        # ``terminal_node`` is a MAGNET-level declaration, not something
+        # ``result_node`` is a MAGNET-level declaration, not something
         # kwdagger understands, so keep it out of the scheduled spec.
         self.spec = {
-            k: v for k, v in pipeline_def.items() if k != 'terminal_node'
+            k: v for k, v in pipeline_def.items() if k != 'result_node'
         }
-        self.terminal_node = pipeline_def.get('terminal_node')
+        self.result_node = pipeline_def.get('result_node')
         self.root_dpath = root_dpath
         self.results = []
         self.symbols = []
@@ -802,12 +802,12 @@ class KWDaggerProcessor:
 
         self.dag, queue = build_schedule(kwd_config)
 
-    def collect_terminal_results(self) -> List[Dict[str, Any]]:
+    def collect_result_cells(self) -> List[Dict[str, Any]]:
         """
-        Read the terminal node's output for each of its configured instances.
+        Read the result node's output for each of its configured instances.
 
         One instance is one cell of the card: a gather with ``group_by``
-        produces one terminal instance per group. Each is asked where its own
+        produces one result instance per group. Each is asked where its own
         artifact is rather than globbing the run tree, and its results are
         qualified as ``metrics.<node>.<name>`` -- kwdagger's convention, kept
         so two nodes cannot collide in a claim's namespace.
@@ -816,8 +816,8 @@ class KWDaggerProcessor:
             List[Dict[str, Any]]: per instance, its distinguishing params
                 (``coords``), its ``results``, and its ``artifact`` path.
         """
-        if not self.terminal_node:
-            raise ValueError('card must declare kwdagger.terminal_node')
+        if not self.result_node:
+            raise ValueError('card must declare kwdagger.result_node')
 
         if not getattr(self, 'dag', None):
             self.dispatch()
@@ -827,12 +827,12 @@ class KWDaggerProcessor:
         instances = [
             node
             for node in self.dag.nodes.values()
-            if node.name == self.terminal_node
+            if node.name == self.result_node
         ]
         if not instances:
             available = sorted({node.name for node in self.dag.nodes.values()})
             raise ValueError(
-                f'terminal_node {self.terminal_node!r} is not a node in the '
+                f'result_node {self.result_node!r} is not a node in the '
                 f'pipeline; available: {available}'
             )
 
@@ -845,14 +845,14 @@ class KWDaggerProcessor:
             )
             if not fpath.exists():
                 raise RuntimeError(
-                    f'terminal node {self.terminal_node!r} produced no '
+                    f'result node {self.result_node!r} produced no '
                     f'{fpath}; the pipeline likely failed upstream'
                 )
             payload = json.loads(fpath.read_text())
             cells.append({
                 'coords': {key: node.config[key] for key in coord_keys},
                 'results': {
-                    f'metrics.{self.terminal_node}.{name}': value
+                    f'metrics.{self.result_node}.{name}': value
                     for name, value in payload.items()
                     if not name.startswith('_')
                 },
@@ -1236,6 +1236,28 @@ class Results:
             else:
                 bound[root] = Results(self._flat, f'{root}.', self._accessed)
         return bound
+
+    def as_dict(self) -> Dict[str, Any]:
+        """
+        The leaf values at this level, unqualified.
+
+        For a claim that would rather work in bare names than qualified ones::
+
+            globals().update(metrics.summarize.as_dict())
+
+        Example:
+            >>> from magnet.evaluation import Results
+            >>> results = Results({'metrics.summarize.mae': 0.1})
+            >>> results.bind()['metrics'].summarize.as_dict()
+            {'mae': 0.1}
+        """
+        depth = len(self._prefix)
+        values = {}
+        for name, value in self._flat.items():
+            if name.startswith(self._prefix) and '.' not in name[depth:]:
+                self._accessed.add(name)
+                values[name[depth:]] = value
+        return values
 
     def __getattr__(self, name: str) -> Any:
         # Underscored names are never results, and answering them here would
@@ -1680,7 +1702,7 @@ def main(argv: Optional[List[str]] = None, **kwargs: Any) -> None:
     if args.queue_backend:
         # One source of truth: the resolver reads this, and so does any nested
         # dispatch. Threading a parameter through evaluate() would miss the
-        # dispatch calls that run from collect_terminal_result().
+        # dispatch calls that run from collect_result_cells().
         os.environ['MAGNET_QUEUE_BACKEND'] = args.queue_backend
 
     card.evaluate(

@@ -5,7 +5,7 @@ The held-out-model DAG: two levels of gather over a model cohort.
         |  gather group_by=[model_id] order_by=[shard_index]
     score[model_id]                   one model's halves
         |  gather group_by=[] order_by=[model_id]
-    holdout                           the terminal node the card reads
+    holdout                           the result node the card reads
 
 Two levels rather than one because the cohort fan-in is the part that matters:
 a missing model would silently shrink the leave-one-out estimate, so the

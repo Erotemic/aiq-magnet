@@ -5,6 +5,23 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Added
+
+* Cards may declare `evidence`: what was measured, the relation asserted, and
+  what it is evidence for (`supports`, `scope`, `relaxes`). Records are written
+  to `evidence.json` beside `verdict.json`. A card may define `evidence`
+  instead of `claim`, in which case the evidence decides each cell.
+* Pipeline results are reachable from a claim by their qualified names, e.g.
+  `metrics.<node>.<name>`.
+
+### Changed
+
+* A `terminal_node` with more than one configured instance is now one cell of
+  the card each, evaluated and written separately, rather than an error. The
+  parameters that distinguish the instances bind as symbols.
+* Terminal artifacts are read from each configured instance's own directory
+  instead of by globbing the run tree.
+
 ### Fixed
 
 * Evaluation card symbols may declare dependencies as either `depends_on` or

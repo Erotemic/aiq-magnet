@@ -165,7 +165,8 @@ def _run_one(
         json.dump(evaluation.log, f, indent=2, ensure_ascii=False)
         f.write('\n')
 
-    return status, results_fpath, execution_hash, resolved_symbols
+    return (status, results_fpath, execution_hash, resolved_symbols,
+            evaluation.evidence)
 
 
 class EvaluationCard:
@@ -246,11 +247,13 @@ class EvaluationCard:
         self.title = cfg.get('title', '')
         self.description = cfg.get('description', '')
 
-        self.claim = Claim(cfg.get('claim'))
+        self.claim = Claim(cfg.get('claim') or {})
         self.claim_aggregation_strategy = cfg.get(
             'claim_aggregation_strategy', DEFAULT_CLAIM_AGGREGATION_STRATEGY
         )
         self.symbols = cfg.get('symbols', {})
+
+        self.evidence_spec = cfg.get('evidence', [])
 
         # explicit kwdagger spec
         self.has_kwdagger = 'kwdagger' in cfg
@@ -356,33 +359,38 @@ class EvaluationCard:
             )
 
             if processor.terminal_node:
-                # The pipeline declares a single terminal artifact, so the
-                # DAG is authoritative: bind its payload as symbols and
-                # evaluate the claim exactly once against what the pipeline
-                # computed.  No globbing, no re-running the claim per
-                # rediscovered result.
-                terminal = processor.collect_terminal_result()
-                terminal_symbols = {
-                    name: {'value': value}
-                    for name, value in terminal.items()
-                    if not name.startswith('_')
-                }
-                self.symbols.update(terminal_symbols)
-                self.evaluations = self.dispatch(
-                    Symbols.decompose_symbol_defs(self.symbols)
-                )
+                # The DAG is authoritative: each terminal instance is one cell
+                # of the card, evaluated against what that instance computed.
+                cells = processor.collect_terminal_results()
+
+                for cell in cells:
+                    # Coordinates bind as ordinary symbols so each cell hashes
+                    # -- and so writes its verdict -- separately. The results
+                    # themselves stay qualified, out of the hash.
+                    cell_symbols = dict(self.symbols)
+                    for name, value in cell['coords'].items():
+                        if name in cell_symbols:
+                            raise ValueError(
+                                f'terminal node parameter {name!r} collides '
+                                f'with a card symbol of the same name'
+                            )
+                        cell_symbols[name] = {'value': value}
+
+                    self.evaluations.extend(self.dispatch(
+                        Symbols.decompose_symbol_defs(cell_symbols),
+                        results=cell['results'],
+                    ))
 
                 with safer.open(
                     card_output_path / 'terminal_result.json',
                     'w',
                     temp_file=SAFER_USE_TEMPFILE,
                 ) as f:
-                    json.dump(terminal, f, indent=2, ensure_ascii=False)
+                    json.dump(cells, f, indent=2, ensure_ascii=False)
                     f.write('\n')
             else:
-                # Legacy path: no declared terminal node, so results are
-                # rediscovered from the run tree and the claim is replayed
-                # for each one.
+                # No declared terminal node: results are rediscovered from the
+                # run tree and the claim is replayed for each one.
                 kwdagger_results, symbols = processor.collect_results()
 
                 for sweep in symbols:
@@ -428,10 +436,16 @@ class EvaluationCard:
         results = []
         resolved_symbols = []
         claim_hashes = []
-        for status, results_fpath, execution_hash, symbols in out:
+        evidence_records = []
+        for status, results_fpath, execution_hash, symbols, evidence in out:
             results.append(status)
             resolved_symbols.append(symbols)
             claim_hashes.append(execution_hash)
+            if evidence:
+                evidence_records.append(
+                    {'claim': execution_hash, 'symbols': symbols,
+                     'evidence': evidence}
+                )
             logger.info(f'Wrote claim output to {results_fpath}')
 
         calculated_metrics = {}
@@ -487,6 +501,20 @@ class EvaluationCard:
             json.dump(aggregate_verdict, f, indent=2, ensure_ascii=False)
             f.write('\n')
 
+        if evidence_records:
+            # Beside the verdict, not inside it: the verdict answers whether
+            # the evidence was sufficient, and stays readable on its own.
+            with safer.open(
+                card_output_path / 'evidence.json', 'w',
+                temp_file=SAFER_USE_TEMPFILE,
+            ) as f:
+                json.dump({
+                    'result': card_result,
+                    'sufficiency': self.claim_aggregation_strategy,
+                    'cells': evidence_records,
+                }, f, indent=2, ensure_ascii=False)
+                f.write('\n')
+
         self.basis = basis_from_card(self.original_card, root=self.card_dpath)
         if self.basis is not None:
             with safer.open(
@@ -499,10 +527,15 @@ class EvaluationCard:
         return card_result
 
     def dispatch(
-        self, flattened_sweep: List['Symbols']
+        self,
+        flattened_sweep: List['Symbols'],
+        results: Dict[str, Any] | None = None,
     ) -> List['EvaluationTask']:
         return [
-            EvaluationTask(Claim({'python': self.claim.claim}), symbols)
+            EvaluationTask(
+                Claim({'python': self.claim.claim}), symbols,
+                results=results, evidence_spec=self.evidence_spec,
+            )
             for symbols in flattened_sweep
         ]
 
@@ -769,89 +802,63 @@ class KWDaggerProcessor:
 
         self.dag, queue = build_schedule(kwd_config)
 
-    def collect_terminal_result(self) -> Dict[str, Any]:
+    def collect_terminal_results(self) -> List[Dict[str, Any]]:
         """
-        Load the declared terminal node's primary output.
+        Read the terminal node's output for each of its configured instances.
 
-        A pipeline that declares ``terminal_node`` is stating that one node
-        produces the card's whole result.  Reading that artifact directly
-        keeps the DAG authoritative -- MAGNET does not have to rediscover
-        outputs by globbing the run tree, and the claim is evaluated once,
-        against what the pipeline actually computed.
+        One instance is one cell of the card: a gather with ``group_by``
+        produces one terminal instance per group. Each is asked where its own
+        artifact is rather than globbing the run tree, and its results are
+        qualified as ``metrics.<node>.<name>`` -- kwdagger's convention, kept
+        so two nodes cannot collide in a claim's namespace.
 
         Returns:
-            Dict[str, Any]: the parsed terminal artifact.
-
-        Raises:
-            ValueError: if no ``terminal_node`` was declared, or it does not
-                name a node in the pipeline.
-            RuntimeError: if the pipeline produced no terminal artifact, or
-                produced more than one (which means the terminal node fanned
-                out and is therefore not terminal).
+            List[Dict[str, Any]]: per instance, its distinguishing params
+                (``coords``), its ``results``, and its ``artifact`` path.
         """
         if not self.terminal_node:
-            raise ValueError(
-                'collect_terminal_result requires the card to declare '
-                "kwdagger.terminal_node"
-            )
+            raise ValueError('card must declare kwdagger.terminal_node')
 
         if not getattr(self, 'dag', None):
             self.dispatch()
 
-        # build_schedule returns *configured* instances keyed by process id
-        # (``card_summary_id_wyaepu4x46tf``); ``node.name`` is the template
-        # name the card refers to.
+        # build_schedule returns configured instances keyed by process id;
+        # node.name is the template name the card refers to.
         instances = [
             node
             for node in self.dag.nodes.values()
             if node.name == self.terminal_node
         ]
-
         if not instances:
             available = sorted({node.name for node in self.dag.nodes.values()})
             raise ValueError(
                 f'terminal_node {self.terminal_node!r} is not a node in the '
                 f'pipeline; available: {available}'
             )
-        if len(instances) > 1:
-            # More than one configured instance means the node is still
-            # parameterized by something swept, so it summarizes a slice
-            # rather than the card.  Catching it here -- before reading any
-            # artifact -- is better than silently reporting a partial
-            # result as the whole finding.
-            raise RuntimeError(
-                f'terminal_node {self.terminal_node!r} has '
-                f'{len(instances)} configured instances, so it is not '
-                f'terminal.  Gather its inputs (or drop its swept '
-                f'parameters) so exactly one instance remains.'
+
+        coord_keys = _varying_keys([dict(node.config) for node in instances])
+
+        cells = []
+        for node in instances:
+            fpath = (
+                node.final_node_dpath / node.out_paths[node.primary_out_key]
             )
-
-        node = instances[0]
-        out_fname = node.out_paths[node.primary_out_key]
-
-        node_dpath = self.root_dpath / self.terminal_node
-        found = sorted(node_dpath.glob(f'*/{out_fname}'))
-
-        if not found:
-            raise RuntimeError(
-                f'terminal node {self.terminal_node!r} produced no '
-                f'{out_fname} under {node_dpath}.  The pipeline likely '
-                f'failed upstream; inspect the kwdagger run directory.'
-            )
-        if len(found) > 1:
-            raise RuntimeError(
-                f'terminal node {self.terminal_node!r} produced '
-                f'{len(found)} artifacts under {node_dpath}, but the DAG '
-                f'configured only one instance.  Stale output from an '
-                f'earlier run with different parameters is the usual '
-                f'cause. Found: {[str(p) for p in found]}'
-            )
-
-        with open(found[0], 'r') as file:
-            payload = json.load(file)
-
-        payload.setdefault('_terminal_artifact_fpath', str(found[0]))
-        return payload
+            if not fpath.exists():
+                raise RuntimeError(
+                    f'terminal node {self.terminal_node!r} produced no '
+                    f'{fpath}; the pipeline likely failed upstream'
+                )
+            payload = json.loads(fpath.read_text())
+            cells.append({
+                'coords': {key: node.config[key] for key in coord_keys},
+                'results': {
+                    f'metrics.{self.terminal_node}.{name}': value
+                    for name, value in payload.items()
+                    if not name.startswith('_')
+                },
+                'artifact': str(fpath),
+            })
+        return cells
 
     def collect_results(self) -> Tuple[List[str], List[Any]]:
         if not self.results:
@@ -876,9 +883,18 @@ class EvaluationTask:
     Singular submission from an Evaluation Card
     """
 
-    def __init__(self, claim: 'Claim', symbols: 'Symbols') -> None:
+    def __init__(
+        self,
+        claim: 'Claim',
+        symbols: 'Symbols',
+        results: Dict[str, Any] | None = None,
+        evidence_spec: List[Dict[str, Any]] | None = None,
+    ) -> None:
         self.claim = claim
         self.symbols = symbols
+        self.results = Results(results or {})
+        self.evidence_spec = evidence_spec or []
+        self.evidence: List[Dict[str, Any]] = []
         self.output_msg = ''
         self.log: Dict[str, Any] = {}
 
@@ -888,7 +904,23 @@ class EvaluationTask:
         #           ...
         #           zn -> an -> resn
         # make sure x,y are done once / before sweep
-        self.result, self.output_msg = self.claim.evaluate(self.symbols())
+        context = self.symbols()
+        for name, value in self.results.bind().items():
+            if name in context:
+                raise ValueError(
+                    f'symbol {name!r} collides with a pipeline result of the '
+                    f'same name; rename the symbol'
+                )
+            context[name] = value
+
+        self.evidence = _collect_evidence(self.evidence_spec, context)
+
+        if self.evidence and not self.claim.claim.strip():
+            # Evidence alone decides the cell when there is no claim to run.
+            self.result, self.output_msg = _verdict_from_evidence(self.evidence)
+        else:
+            self.result, self.output_msg = self.claim.evaluate(context)
+
         self.record_run()
         return self.result, self.output_msg
 
@@ -900,6 +932,10 @@ class EvaluationTask:
             'symbols': self.symbols.simple_view(),
             'timestamp': completion_time,
         }
+        if self.evidence:
+            self.log['evidence'] = self.evidence
+        if self.results.accessed:
+            self.log['consumed'] = sorted(self.results.accessed)
 
     @property
     def _execution_hash(self) -> str:
@@ -913,6 +949,133 @@ def _parse_symbol_metadata(symbols_spec: Dict[str, Any]) -> Dict[str, Any]:
         if symbol_metadata is not None:
             metadata[name] = symbol_metadata
     return metadata
+
+
+_RELATIONS = {
+    'gt': lambda value, target: value > target,
+    'ge': lambda value, target: value >= target,
+    'lt': lambda value, target: value < target,
+    'le': lambda value, target: value <= target,
+    'eq': lambda value, target: value == target,
+}
+
+
+def _relation_holds(relation: Dict[str, Any], value: Any) -> bool:
+    """
+    Apply a declared relation to a measured value.
+
+    Example:
+        >>> from magnet.evaluation import _relation_holds
+        >>> _relation_holds({'gt': 0.07}, 0.19)
+        True
+        >>> _relation_holds({'within': {'of': 50.0, 'tol': 5.0}}, 52.0)
+        True
+        >>> _relation_holds({'gt': 0, 'lt': 1}, 0.5)
+        Traceback (most recent call last):
+            ...
+        ValueError: evidence relation must name exactly one of ...
+    """
+    if len(relation) != 1:
+        raise ValueError(
+            f'evidence relation must name exactly one of '
+            f'{sorted(_RELATIONS) + ["within"]}; got {sorted(relation)}'
+        )
+    (name, target), = relation.items()
+    if name == 'within':
+        return abs(value - target['of']) <= target['tol']
+    if name not in _RELATIONS:
+        raise ValueError(
+            f'unknown evidence relation {name!r}; '
+            f'known: {sorted(_RELATIONS) + ["within"]}'
+        )
+    return _RELATIONS[name](value, target)
+
+
+def _lookup_qualified(context: Dict[str, Any], name: str) -> Any:
+    """Resolve a plain symbol name or a dotted qualified name."""
+    head, _, rest = name.partition('.')
+    if head not in context:
+        raise KeyError(name)
+    value = context[head]
+    for part in rest.split('.') if rest else []:
+        value = value[part]
+    return value
+
+
+def _collect_evidence(
+    spec: List[Dict[str, Any]], context: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """
+    Measure each declared item and record whether its relation held.
+
+    Anything the card says about an item that is not the measurement itself --
+    ``scope``, ``supports``, ``relaxes`` -- is carried through unread, so the
+    record keeps what the run was evidence *for*.
+    """
+    records = []
+    for item in spec:
+        name = item['measures']
+        record: Dict[str, Any] = {'measures': name}
+        try:
+            value = _lookup_qualified(context, name)
+        except (KeyError, AttributeError) as ex:
+            record.update(value=None, held=None, error=str(ex))
+        else:
+            relation = item.get('relation')
+            record['value'] = value
+            record['relation'] = relation
+            record['held'] = (
+                None if relation is None else _relation_holds(relation, value)
+            )
+        for key in ('scope', 'supports', 'relaxes'):
+            if key in item:
+                record[key] = item[key]
+        records.append(record)
+    return records
+
+
+def _verdict_from_evidence(
+    evidence: List[Dict[str, Any]]
+) -> Tuple[str, str]:
+    """
+    Reduce one cell's evidence to a status.
+
+    Example:
+        >>> from magnet.evaluation import _verdict_from_evidence
+        >>> _verdict_from_evidence([{'measures': 'x', 'held': True}])[0]
+        'VERIFIED'
+        >>> _verdict_from_evidence([{'measures': 'x', 'held': False}])[0]
+        'FALSIFIED'
+        >>> _verdict_from_evidence([{'measures': 'x', 'held': None}])[0]
+        'INCONCLUSIVE'
+    """
+    held = [record.get('held') for record in evidence]
+    if any(value is None for value in held):
+        unmet = [
+            record['measures']
+            for record in evidence
+            if record.get('held') is None
+        ]
+        return 'INCONCLUSIVE', f'no measurement for: {", ".join(unmet)}'
+    if all(held):
+        return 'VERIFIED', 'all evidence holds'
+    failed = [
+        f'{record["measures"]}={record.get("value")!r}'
+        for record in evidence
+        if not record.get('held')
+    ]
+    return 'FALSIFIED', f'evidence does not hold: {", ".join(failed)}'
+
+
+def _varying_keys(configs: List[Dict[str, Any]]) -> List[str]:
+    """Config keys whose values differ across configured node instances."""
+    if len(configs) < 2:
+        return []
+    shared = set.intersection(*[set(config) for config in configs])
+    return sorted(
+        key for key in shared
+        if len({repr(config[key]) for config in configs}) > 1
+    )
 
 
 def _reduce_results(results: List[str], reduce_spec: Dict[str, Any]) -> str:
@@ -1023,6 +1186,89 @@ class Claim:
 
     def __repr__(self) -> str:
         return self.claim
+
+
+class Results:
+    """
+    Pipeline results addressed by their qualified names.
+
+    kwdagger's convention is a flat dict of ``metrics.<node>.<name>`` keys.
+    Those are not Python identifiers, so a claim cannot name them directly;
+    this exposes each dotted level as an attribute instead. Reads are recorded,
+    which is what lets the evidence record say which values a claim consumed.
+
+    Example:
+        >>> from magnet.evaluation import Results
+        >>> results = Results({'metrics.summarize.pooled_mean': 50.4,
+        ...                    'metrics.summarize.num_samples': 5})
+        >>> bound = results.bind()
+        >>> bound['metrics'].summarize.pooled_mean
+        50.4
+        >>> sorted(results.accessed)
+        ['metrics.summarize.pooled_mean']
+        >>> bound['metrics'].summarize.missing
+        Traceback (most recent call last):
+            ...
+        AttributeError: no 'missing' under 'metrics.summarize'; available: ...
+    """
+
+    def __init__(
+        self,
+        flat: Dict[str, Any],
+        prefix: str = '',
+        accessed: set | None = None,
+    ) -> None:
+        self._flat = dict(flat)
+        self._prefix = prefix
+        self._accessed = set() if accessed is None else accessed
+
+    @property
+    def accessed(self) -> set:
+        return self._accessed
+
+    def bind(self) -> Dict[str, Any]:
+        """Top-level names to inject into a claim's namespace."""
+        bound = {}
+        for key in self._flat:
+            root = key.split('.', 1)[0]
+            if root in self._flat:
+                bound[root] = self._flat[root]
+            else:
+                bound[root] = Results(self._flat, f'{root}.', self._accessed)
+        return bound
+
+    def __getattr__(self, name: str) -> Any:
+        # Underscored names are never results, and answering them here would
+        # recurse during unpickling, before _flat exists.
+        if name.startswith('_'):
+            raise AttributeError(name)
+        return self[name]
+
+    def __getitem__(self, key: str) -> Any:
+        qualified = f'{self._prefix}{key}'
+        if qualified in self._flat:
+            self._accessed.add(qualified)
+            return self._flat[qualified]
+
+        branch = f'{qualified}.'
+        if any(name.startswith(branch) for name in self._flat):
+            return Results(self._flat, branch, self._accessed)
+
+        raise AttributeError(
+            f'no {key!r} under {self._prefix.rstrip(".")!r}; '
+            f'available: {", ".join(self._children())}'
+        )
+
+    def _children(self) -> List[str]:
+        depth = len(self._prefix)
+        return sorted({
+            name[depth:].split('.', 1)[0]
+            for name in self._flat
+            if name.startswith(self._prefix)
+        })
+
+    def __repr__(self) -> str:
+        return f'<Results {self._prefix or "."}: {", ".join(self._children())}>'
 
 
 class Symbol:

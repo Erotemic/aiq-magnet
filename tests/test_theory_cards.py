@@ -8,6 +8,20 @@ from magnet.evaluation import EvaluationCard
 from magnet.theory import approximates, satisfies
 from magnet.theory.cards import basis_from_card
 
+
+def _run_dpath(runs_root):
+    """The card's run directory: ``<card hash>_<timestamp>``.
+
+    ``_kwdagger`` sits beside it and holds the DAG's node artifacts, shared
+    across card versions so an unchanged node is not recomputed when an
+    unrelated part of the card changes. It is not a run directory.
+    """
+    import ubelt as ub
+    return ub.Path(next(
+        p for p in sorted(ub.Path(runs_root).iterdir())
+        if p.is_dir() and not p.name.startswith('_')))
+
+
 THEOREMS = {
     'project': {'name': 'Example', 'commit': '0' * 40},
     'theorems': [
@@ -74,7 +88,7 @@ def test_a_grounded_card_writes_theory_json(card_root):
     card = EvaluationCard(card_root / 'card.yaml', card_root / 'runs')
     card.evaluate()
 
-    run_dpath = next(iter((card_root / 'runs').iterdir()))
+    run_dpath = _run_dpath(card_root / 'runs')
     written = json.loads((run_dpath / 'theory.json').read_text())
 
     assert written['coverage']['complete'] is False
@@ -96,6 +110,6 @@ def test_an_ungrounded_card_writes_no_theory_json(tmp_path):
     card = EvaluationCard(tmp_path / 'card.yaml', tmp_path / 'runs')
     card.evaluate()
 
-    run_dpath = next(iter((tmp_path / 'runs').iterdir()))
+    run_dpath = _run_dpath(tmp_path / 'runs')
     assert card.basis is None
     assert not (run_dpath / 'theory.json').exists()

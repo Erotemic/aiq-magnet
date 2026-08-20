@@ -20,6 +20,20 @@ import ubelt as ub
 import yaml
 
 
+def _run_dpath(runs_root):
+    """The card's run directory: ``<card hash>_<timestamp>``.
+
+    ``_kwdagger`` sits beside it and holds the DAG's node artifacts, shared
+    across card versions so an unchanged node is not recomputed when an
+    unrelated part of the card changes. It is not a run directory.
+    """
+    import ubelt as ub
+    return ub.Path(next(
+        p for p in sorted(ub.Path(runs_root).iterdir())
+        if p.is_dir() and not p.name.startswith('_')))
+
+
+
 @pytest.fixture(scope='module')
 def prepared(tmp_path_factory):
     """The card, plus the ledger its theory block names, in one directory."""
@@ -63,7 +77,7 @@ def run_dpath(prepared, tmp_path_factory, request):
 
     card = EvaluationCard(prepared, out_dpath)
     assert card.evaluate() == 'VERIFIED'
-    return ub.Path(next(iter(out_dpath.iterdir())))
+    return _run_dpath(out_dpath)
 
 
 

@@ -15,6 +15,20 @@ import ubelt as ub
 import yaml
 
 
+def _run_dpath(runs_root):
+    """The card's run directory: ``<card hash>_<timestamp>``.
+
+    ``_kwdagger`` sits beside it and holds the DAG's node artifacts, shared
+    across card versions so an unchanged node is not recomputed when an
+    unrelated part of the card changes. It is not a run directory.
+    """
+    import ubelt as ub
+    return ub.Path(next(
+        p for p in sorted(ub.Path(runs_root).iterdir())
+        if p.is_dir() and not p.name.startswith('_')))
+
+
+
 @pytest.fixture
 def prepared(tmp_path):
     """The card, plus the ledger its theory block names, in one directory."""
@@ -53,7 +67,7 @@ def test_the_dag_runs_and_reports_what_it_assumes(prepared, tmp_path, monkeypatc
     card = EvaluationCard(prepared, tmp_path / 'runs')
     assert card.evaluate() == 'VERIFIED'
 
-    run_dpath = ub.Path(next(iter((tmp_path / 'runs').iterdir())))
+    run_dpath = _run_dpath(tmp_path / 'runs')
 
     # The DAG really ran: five sample jobs fanned into one result artifact.
     cells = json.loads((run_dpath / 'result_cells.json').read_text())

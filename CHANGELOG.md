@@ -18,6 +18,28 @@ named for the run directory: `schedule-incubilate_lift_scaled-up`.
 Two runs of the same card still share a name, which is correct -- that is a
 real conflict. Different cards no longer collide.
 
+### A card change no longer recomputes the cells it did not change
+
+The DAG's node artifacts move from `<output>/<card hash>_<timestamp>/kwdagger`
+to `<output>/_kwdagger`, shared across card versions.
+
+kwdagger already identifies a node by hashing its own configuration, so an
+unchanged node keeps its id when a different part of the card changes. Rooting
+the DAG under a hash of the WHOLE card discarded that: adding one model to a
+13-model cohort moved all 48 unchanged shards to a new path, so the
+`test -e <artifact>` guard missed on every one and two hours of unchanged work
+was recomputed.
+
+Sharing the root is safe because collection is instance-driven --
+`collect_result_cells` asks the DAG where its artifact is rather than globbing
+the tree, so a card reads only the nodes its own matrix configured. Two cards
+that configure a node identically produce the same id, and the same id means
+the same computation.
+
+Per-run provenance (`card.yaml`, `results/`, `symbol_metadata.json`) stays
+under the card-hash directory, so what produced a result is still recorded
+exactly. Artifacts from before this change are orphaned and recomputed once.
+
 ## Unreleased
 
 ### Added

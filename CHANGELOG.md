@@ -3,6 +3,21 @@
 This changelog follows the specifications detailed in: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), although we have not yet reached a `1.0.0` release.
 
+### tmux queue sessions name their run
+
+Every card's queue was called `schedule-eval`, so cmd_queue's tmux backend --
+which matches sessions on that name to decide what is a conflict -- treated
+unrelated runs as conflicting and offered to kill them.
+
+kwdagger cannot name it: MAGNET passes the pipeline as a DAG object inside
+`params` rather than as the `pipeline` spec string kwdagger derives a name
+from, and a `Pipeline` has no name of its own. MAGNET does know, because
+`root_dpath` is `<run>/evaluation_runs/<hash>/kwdagger`, so the queue is now
+named for the run directory: `schedule-incubilate_lift_scaled-up`.
+
+Two runs of the same card still share a name, which is correct -- that is a
+real conflict. Different cards no longer collide.
+
 ## Unreleased
 
 ### Added

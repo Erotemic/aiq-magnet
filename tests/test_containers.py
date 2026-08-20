@@ -208,3 +208,29 @@ def test_pythonpath_is_captured_not_left_bare(monkeypatch):
     monkeypatch.setenv('PYTHONPATH', '/repo:/repo/ta1/thing')
     command = _node(Work, {'task': 't'}).command
     assert '-e PYTHONPATH=/repo:/repo/ta1/thing' in command
+
+
+def test_the_queue_name_identifies_the_run():
+    """tmux sessions must say which run they belong to.
+
+    cmd_queue matches sessions on the queue name to decide what counts as a
+    conflict. kwdagger cannot name this one: MAGNET passes the pipeline as a
+    DAG object inside `params`, not as the spec string kwdagger names itself
+    from, and a Pipeline has no name. Every card therefore fell back to
+    'schedule-eval' and shared one namespace.
+    """
+    from magnet.evaluation import _queue_name_for
+
+    assert _queue_name_for(
+        '/r/runs/aiq-gpu/incubilate_lift_scaled-up/evaluation_runs/h_ts/kwdagger'
+    ) == 'schedule-incubilate_lift_scaled-up'
+    # Different cards must not collide...
+    assert _queue_name_for('/r/runs/h/a/evaluation_runs/x/kwdagger') != \
+        _queue_name_for('/r/runs/h/b/evaluation_runs/x/kwdagger')
+    # ...but two runs of the SAME card still share a name, because that is a
+    # genuine conflict worth detecting.
+    assert _queue_name_for('/r/runs/h/a/evaluation_runs/x1/kwdagger') == \
+        _queue_name_for('/r/runs/h/a/evaluation_runs/x2/kwdagger')
+    # A queue name is never worth raising over.
+    assert _queue_name_for('/tmp/nowhere') == 'schedule-eval'
+    assert _queue_name_for(None) == 'schedule-eval'

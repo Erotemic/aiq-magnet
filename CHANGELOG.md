@@ -3,6 +3,32 @@
 This changelog follows the specifications detailed in: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html), although we have not yet reached a `1.0.0` release.
 
+### A leased node is confined to the GPUs Slurm gave it
+
+`infer-stack run` was rendered without `--allowed_gpus`, so every DAG node
+planned against every GPU on the box rather than the ones its job was
+allocated. Two nodes then placed model servers on the same card and one died
+with CUDA OOM.
+
+Nothing in the environment covered for it. `aiq-gpu` sets
+`ConstrainDevices=yes` but `TaskPlugin=task/none`, and ConstrainDevices does
+nothing without task/cgroup, so no device cgroup is ever created: measured
+inside a 2-GPU allocation, `nvidia-smi -L` listed all four cards. infer-stack
+takes its inventory from that list. `INFER_STACK_ALLOWED_GPUS` is not a
+fallback either -- it is read by the catalog commands, not by `acquire`/`run`
+-- so the allow-list has to be on the command line.
+
+The value cannot be known when the command is rendered: the DAG is built on
+the submit host, where no allocation exists. So the command carries shell text
+that resolves at job time, reading `SLURM_JOB_GPUS` and falling back to
+`SLURM_STEP_GPUS` (under `srun` the step variable is the one that is set).
+`CUDA_VISIBLE_DEVICES` is deliberately not consulted: it may hold GPU UUIDs,
+which infer-stack's `int()` parse rejects.
+
+It expands to nothing at all when neither variable is set, so the tmux backend
+renders exactly the command it did before. `MAGNET_LEASE_ALLOWED_GPUS=0`
+suppresses it.
+
 ### tmux queue sessions name their run
 
 Every card's queue was called `schedule-eval`, so cmd_queue's tmux backend --

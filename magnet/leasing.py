@@ -17,6 +17,11 @@ The cost: with ``reclaim: stop`` a cohort with more models than GPUs reloads
 weights repeatedly. Use ``reclaim: keep-warm``, where the lease bounds
 entitlement rather than container lifetime.
 
+Under Slurm the rendered command also carries an allow-list of the GPUs the
+job was actually given, since infer-stack otherwise plans against every card
+it can see -- which on a host without a device cgroup is all of them, not the
+ones this job was allocated. See :data:`GPU_ALLOW_LIST_EXPANSION`.
+
 Opt-in via ``MAGNET_PER_NODE_LEASING=1``. Off by default because plenty of
 legitimate runs point at a server infer-stack does not manage.
 """
@@ -28,7 +33,14 @@ import shlex
 
 from magnet.containers import ContainerProcessNode
 
-__all__ = ['LeasedProcessNode', 'leasing_is_enabled', 'LEASING_ENVVAR']
+__all__ = [
+    'LeasedProcessNode',
+    'leasing_is_enabled',
+    'slurm_gpu_allow_list',
+    'LEASING_ENVVAR',
+    'ALLOWED_GPUS_ENVVAR',
+    'GPU_ALLOW_LIST_EXPANSION',
+]
 
 #: Set truthy to render each node's command inside its own lease. **Opt-in.**
 #: Off by default because plenty of legitimate runs point at a server
@@ -42,6 +54,36 @@ LEASING_ENVVAR = 'MAGNET_PER_NODE_LEASING'
 #: someone else's lease, which already holds every endpoint it named, so
 #: acquiring again per node is pure overhead.
 INSIDE_LEASE_ENVVAR = 'INFER_STACK_LEASE_ID'
+
+#: Set falsey to stop emitting ``--allowed_gpus``. Unlike :data:`LEASING_ENVVAR`
+#: this is opt-OUT: off Slurm the flag renders to nothing at all, and under
+#: Slurm its absence is a correctness bug. The hatch is for a site whose Slurm
+#: reports indices that do not match the ones the container runtime sees.
+ALLOWED_GPUS_ENVVAR = 'MAGNET_LEASE_ALLOWED_GPUS'
+
+#: An unquoted shell word that becomes ``--allowed_gpus=<indices>`` inside a
+#: Slurm job and disappears entirely everywhere else.
+#:
+#: Deferred rather than interpolated because the DAG is rendered on the submit
+#: host, where no allocation exists and the value is therefore unknowable; it
+#: only becomes true once the job is running. Written as one word so that when
+#: neither variable is set the whole thing is an empty unquoted expansion,
+#: which a shell drops from the argument list -- as opposed to
+#: ``--allowed_gpus ''``, which infer-stack would see and have to interpret.
+#: The odd two-part shape is what makes ``SLURM_STEP_GPUS`` a fallback rather
+#: than a second flag: the first half contributes only the flag name when
+#: ``SLURM_JOB_GPUS`` is set, and the second half supplies either that
+#: variable's value or, only if it is unset, the step's.
+#:
+#: ``CUDA_VISIBLE_DEVICES`` is deliberately not in the chain. It may
+#: legitimately hold GPU UUIDs (``GPU-4d888104-...``) instead of indices, and
+#: infer-stack parses this value with ``int()`` per element, so a UUID there is
+#: a crash rather than a narrower allow-list. The two SLURM_* variables are
+#: always numeric indices.
+GPU_ALLOW_LIST_EXPANSION = (
+    '${SLURM_JOB_GPUS:+--allowed_gpus=}'
+    '${SLURM_JOB_GPUS:-${SLURM_STEP_GPUS:+--allowed_gpus=$SLURM_STEP_GPUS}}'
+)
 
 _FALSEY = {'0', 'false', 'no', 'off', ''}
 
@@ -60,6 +102,30 @@ def leasing_is_enabled() -> bool:
     if explicit.strip().lower() in _FALSEY:
         return False
     return not os.environ.get(INSIDE_LEASE_ENVVAR)
+
+
+def slurm_gpu_allow_list() -> str:
+    """
+    Shell text confining infer-stack to the GPUs this job was allocated.
+
+    Returns:
+        str: :data:`GPU_ALLOW_LIST_EXPANSION`, or empty when
+            :data:`ALLOWED_GPUS_ENVVAR` says not to.
+
+    Example:
+        >>> import os
+        >>> from unittest import mock
+        >>> with mock.patch.dict(os.environ, {ALLOWED_GPUS_ENVVAR: '0'}):
+        ...     slurm_gpu_allow_list()
+        ''
+        >>> with mock.patch.dict(os.environ, {ALLOWED_GPUS_ENVVAR: ''}):
+        ...     slurm_gpu_allow_list().startswith('${SLURM_JOB_GPUS')
+        True
+    """
+    explicit = os.environ.get(ALLOWED_GPUS_ENVVAR, '').strip().lower()
+    if explicit and explicit in _FALSEY:
+        return ''
+    return GPU_ALLOW_LIST_EXPANSION
 
 
 class LeasedProcessNode(ContainerProcessNode):
@@ -155,6 +221,22 @@ class LeasedProcessNode(ContainerProcessNode):
             parts += ['--timeout', str(self.lease_timeout)]
         if self.lease_queue:
             parts += ['--queue']
+        # Which GPUs this node may place on. Not shlex.quote'd, and that is the
+        # point: it has to reach the job script as an unexpanded shell word,
+        # because the allocation it names does not exist yet on the host that
+        # renders this string. Quoting would hand infer-stack the literal
+        # characters `${SLURM_JOB_GPUS...}`, which it parses with `int()`. See
+        # GPU_ALLOW_LIST_EXPANSION for why the value has to be deferred, and
+        # why CUDA_VISIBLE_DEVICES is not the variable to read it from.
+        #
+        # Without it every node plans against every card on the box. `aiq-gpu`
+        # sets ConstrainDevices=yes but TaskPlugin=task/none, so no device
+        # cgroup is ever created and `nvidia-smi -L` inside a 2-GPU allocation
+        # lists all four. infer-stack takes its inventory from that list, two
+        # nodes place servers on the same card, and one dies with CUDA OOM.
+        allow_list = slurm_gpu_allow_list()
+        if allow_list:
+            parts += [allow_list]
         # Everything after `--` is the command; without it a command that
         # starts with a dash would be parsed as an option to `run`.
         parts += ['--']

@@ -181,11 +181,11 @@ def test_the_queue_name_identifies_the_run():
     cmd_queue matches tmux sessions on the queue name to decide what counts as
     a conflict, and every card used to fall back to 'schedule-eval'.
     """
-    from magnet.evaluation import _queue_name_for
+    from magnet._kwdagger import _queue_name_for
 
     assert _queue_name_for(
-        '/r/runs/aiq-gpu/incubilate_lift_scaled-up/evaluation_runs/h_ts/kwdagger'
-    ) == 'schedule-incubilate_lift_scaled-up'
+        '/r/runs/host/nightly_sweep/evaluation_runs/h_ts/kwdagger'
+    ) == 'schedule-nightly_sweep'
     # Different cards must not collide...
     assert _queue_name_for('/r/runs/h/a/evaluation_runs/x/kwdagger') != \
         _queue_name_for('/r/runs/h/b/evaluation_runs/x/kwdagger')

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
@@ -32,6 +34,7 @@ from loguru import logger
 from pydantic import ValidationError
 from rich import print
 
+from magnet import containers, leasing
 from magnet._kwdagger import KWDaggerProcessor, _resolve_pipeline_path
 from magnet.evaluation import (
     SAFER_USE_TEMPFILE,
@@ -46,8 +49,13 @@ from magnet.evaluation import (
 from magnet.schema import RECIPE_NAME_PATTERN, NewEvaluationRecipeSchema
 from magnet.utils.util_logger import setup_logging
 
+#: kwdagger's own default, used when there is no GPU to derive a cap from.
+DEFAULT_TMUX_WORKERS = 8
+
 __all__ = [
     'ClaimResultNamespace',
+    'detected_gpu_count',
+    'resolve_tmux_workers',
     'NewEvaluationCLI',
     'NewEvaluationCellResult',
     'NewEvaluationRecipe',
@@ -96,10 +104,68 @@ class NewEvaluationCLI(kwconf.Config):
         ),
     )
 
-    tmux_workers: int = kwconf.Value(
-        8,
-        parser=int,
-        help='Number of tmux workers. Passed directly to kwdagger.',
+    tmux_workers: str = kwconf.Value(
+        'auto',
+        parser=str,
+        help=(
+            "Number of tmux workers, or 'auto' to bound it by the number of "
+            'GPUs on this machine. Concurrency has to stay under the GPU '
+            'count when leased nodes hold a model while waiting for another: '
+            'claim every GPU and nothing can be placed, so nothing releases.'
+        ),
+    )
+
+    container_image: str = kwconf.Value(
+        '',
+        parser=str,
+        help=(
+            'Run each node command in this image. Empty (the default) runs '
+            'them on the host. A node that declares its own image wins.'
+        ),
+        group='containers',
+    )
+
+    container_mounts: str = kwconf.Value(
+        '',
+        parser=str,
+        help=(
+            'Colon- or comma-separated host paths to bind-mount at their own '
+            'absolute paths. Normally the repository root.'
+        ),
+        group='containers',
+    )
+
+    container_docker_args: str = kwconf.Value(
+        '',
+        parser=str,
+        help=(
+            'Extra `docker run` arguments, for what varies by host: GPU '
+            'reservations, an alternate network, a registry credential mount.'
+        ),
+        group='containers',
+    )
+
+    container_forward_env: str = kwconf.Value(
+        '',
+        parser=str,
+        help=(
+            'Extra environment variable names to forward into the container, '
+            "on top of the defaults. This is how a pipeline's own "
+            'configuration reaches its nodes.'
+        ),
+        group='containers',
+    )
+
+    per_node_leasing: bool = kwconf.Value(
+        False,
+        isflag=True,
+        help=(
+            'Let each node acquire its own inference endpoints for the '
+            'duration of its own job, instead of holding every model in the '
+            'cohort for the whole run. Off by default: a run pointing at a '
+            'server infer-stack does not manage has no catalog to look up.'
+        ),
+        group='containers',
     )
 
     skip_existing = kwconf.Value(
@@ -174,16 +240,29 @@ class NewEvaluationCLI(kwconf.Config):
         if args.params is not None:
             recipe.apply_params(args.params)
 
+        # Execution environment. Passed configuration, so it comes from these
+        # arguments rather than from the ambient environment -- which also
+        # means the record of an invocation says what it ran in.
+        containers.configure(
+            image=args['container_image'],
+            mounts=args['container_mounts'],
+            docker_args=args['container_docker_args'],
+            forward_env=args['container_forward_env'],
+        )
+        leasing.configure(enabled=bool(args['per_node_leasing']))
+
         schedule_options = {
             key: args[key]
             for key in [
                 'backend',
-                'tmux_workers',
                 'skip_existing',
                 'cache',
                 'max_configs',
             ]
         }
+        schedule_options['tmux_workers'] = resolve_tmux_workers(
+            args['tmux_workers']
+        )
         result_card = recipe.evaluate(
             verbose=bool(args.verbose),
             **schedule_options,
@@ -597,6 +676,68 @@ def _link_kwdagger_root(recipe_output_path: ub.Path, kwdagger_dpath: ub.Path) ->
         ub.symlink(kwdagger_dpath, link, overwrite=True)
     except OSError as ex:
         logger.warning(f'could not link {link} to the DAG root: {ex}')
+
+
+def detected_gpu_count() -> int:
+    """
+    How many GPUs this machine has, or 0 when that cannot be determined.
+
+    An ambient fact about the host, so it is discovered rather than passed.
+    ``nvidia-smi`` is asked because it is what reports the devices actually
+    present; no import of a CUDA runtime is involved, and a machine without it
+    simply reports none.
+    """
+    exe = shutil.which('nvidia-smi')
+    if exe is None:
+        return 0
+    try:
+        proc = subprocess.run(
+            [exe, '--list-gpus'],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return 0
+    if proc.returncode != 0:
+        return 0
+    return sum(1 for line in proc.stdout.splitlines() if line.strip())
+
+
+def resolve_tmux_workers(requested: Any) -> int:
+    """
+    How many queue workers may run at once.
+
+    Args:
+        requested: an integer, or ``'auto'`` to derive one from the hardware.
+
+    Returns:
+        int: the worker cap.
+
+    This bounds GPU contention. A leased node holds its answerer while it waits
+    for the extractor it also needs, so if enough shards start at once to claim
+    every GPU, none can ever get the extractor and none will release. Observed
+    on a 4-GPU host: four answerers on GPUs 0-3, the shared extractor
+    unplaceable, eight leases queued behind it, zero rows produced in an hour.
+    The run does not fail, it converges every five seconds forever.
+
+    ``auto`` leaves one GPU free for a shared extractor, which is the shape of
+    every cohort we run. A host with no GPUs is not doing GPU work, so it keeps
+    kwdagger's own default rather than being throttled to nothing.
+
+    Example:
+        >>> from magnet.evaluation_new import resolve_tmux_workers
+        >>> resolve_tmux_workers(4)
+        4
+        >>> resolve_tmux_workers('4')
+        4
+        >>> isinstance(resolve_tmux_workers('auto'), int)
+        True
+    """
+    if isinstance(requested, str) and requested.strip().lower() == 'auto':
+        gpus = detected_gpu_count()
+        if gpus <= 0:
+            return DEFAULT_TMUX_WORKERS
+        return max(1, gpus - 1)
+    return int(requested)
 
 
 def _check_new_evaluation_recipe(recipe: NewEvaluationRecipe) -> None:

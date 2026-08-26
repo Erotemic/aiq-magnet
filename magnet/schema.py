@@ -298,6 +298,11 @@ class NewEvaluationRecipeSchema(EvaluationCardSchema):
         >>> raw = {
         ...     'title': 'Held-out model consistency',
         ...     'description': 'd',
+        ...     'version': 1.0,
+        ...     'organizations': ['Kitware'],
+        ...     'submitter': {'name': 'K', 'email': 'k@example.com'},
+        ...     'tags': [],
+        ...     'links': [],
         ...     'claim': {'python': 'assert True'},
         ...     'kwdagger': {'pipeline': {}, 'result_node': 'score'},
         ... }

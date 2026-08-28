@@ -16,6 +16,11 @@ The cost: with ``reclaim: stop`` a cohort with more models than GPUs reloads
 weights repeatedly. Use ``reclaim: keep-warm``, where the lease bounds
 entitlement rather than container lifetime.
 
+Under Slurm the rendered command also carries an allow-list of the GPUs the job
+was actually given, since infer-stack otherwise plans against every card it can
+see -- which on a host without a device cgroup is all of them, not the ones this
+job was allocated. See :data:`GPU_ALLOW_LIST_EXPANSION`.
+
 Opt-in via ``--per_node_leasing``. Off by default because plenty of
 legitimate runs point at a server infer-stack does not manage.
 """
@@ -31,7 +36,9 @@ __all__ = [
     'LeasedProcessNode',
     'configure',
     'leasing_is_enabled',
+    'slurm_gpu_allow_list',
     'INSIDE_LEASE_ENVVAR',
+    'GPU_ALLOW_LIST_EXPANSION',
 ]
 
 #: Whether each node's command renders inside its own lease. **Opt-in**, set
@@ -42,10 +49,20 @@ __all__ = [
 #: looking up an endpoint that was never in a catalog.
 _ENABLED = False
 
+#: Whether to emit ``--allowed_gpus``. Unlike leasing itself this defaults ON:
+#: off Slurm the flag renders to nothing at all, and under Slurm its absence is
+#: a correctness bug. The hatch exists for a site whose Slurm reports indices
+#: that do not match the ones the container runtime sees.
+_ALLOWED_GPUS = True
 
-def configure(enabled: bool = False) -> bool:
+
+def configure(enabled: bool = False, allowed_gpus: bool = True) -> bool:
     """
     Set whether nodes lease their own endpoints, and return the setting.
+
+    Args:
+        enabled: render each node's command inside its own lease.
+        allowed_gpus: confine a leased node to its Slurm allocation.
 
     Called from the CLI before scheduling. This is passed configuration, so it
     arrives as an argument rather than from the environment; contrast
@@ -61,8 +78,9 @@ def configure(enabled: bool = False) -> bool:
         >>> configure(False)
         False
     """
-    global _ENABLED
+    global _ENABLED, _ALLOWED_GPUS
     _ENABLED = bool(enabled)
+    _ALLOWED_GPUS = bool(allowed_gpus)
     return _ENABLED
 
 #: Exported by ``infer-stack run``. Its presence means we are already inside
@@ -83,6 +101,46 @@ def leasing_is_enabled() -> bool:
     if not _ENABLED:
         return False
     return not os.environ.get(INSIDE_LEASE_ENVVAR)
+
+
+#: An unquoted shell word that becomes ``--allowed_gpus=<indices>`` inside a
+#: Slurm job and disappears everywhere else.
+#:
+#: Deferred, not interpolated: the DAG renders on the submit host where no
+#: allocation exists yet. One word, so with neither variable set it expands to
+#: nothing and the shell drops it -- as opposed to ``--allowed_gpus ''``, which
+#: infer-stack would have to interpret. The two-part shape is what makes
+#: ``SLURM_STEP_GPUS`` a fallback rather than a second flag; it is load-bearing,
+#: since under ``srun`` that is the variable that is set.
+#:
+#: ``CUDA_VISIBLE_DEVICES`` is deliberately excluded: it may hold GPU UUIDs, and
+#: infer-stack parses this with ``int()`` per element, so reading it would turn
+#: a narrower allow-list into a crash.
+GPU_ALLOW_LIST_EXPANSION = (
+    '${SLURM_JOB_GPUS:+--allowed_gpus=}'
+    '${SLURM_JOB_GPUS:-${SLURM_STEP_GPUS:+--allowed_gpus=$SLURM_STEP_GPUS}}'
+)
+
+
+def slurm_gpu_allow_list() -> str:
+    """
+    Shell text confining infer-stack to the GPUs this job was allocated.
+
+    Returns:
+        str: :data:`GPU_ALLOW_LIST_EXPANSION`, or empty when configured off.
+
+    Example:
+        >>> from magnet.leasing import configure, slurm_gpu_allow_list
+        >>> configure(True, allowed_gpus=False)
+        True
+        >>> slurm_gpu_allow_list()
+        ''
+        >>> _ = configure(True)
+        >>> slurm_gpu_allow_list().startswith('${SLURM_JOB_GPUS')
+        True
+        >>> _ = configure(False)
+    """
+    return GPU_ALLOW_LIST_EXPANSION if _ALLOWED_GPUS else ''
 
 
 class LeasedProcessNode(ContainerProcessNode):
@@ -178,6 +236,17 @@ class LeasedProcessNode(ContainerProcessNode):
             parts += ['--timeout', str(self.lease_timeout)]
         if self.lease_queue:
             parts += ['--queue']
+        # NOT shlex.quote'd, and that is the point: it must reach the job
+        # script unexpanded. Quoting hands infer-stack the literal
+        # `${SLURM_JOB_GPUS...}` characters. See GPU_ALLOW_LIST_EXPANSION.
+        #
+        # Without it every node plans against every card on the box: aiq-gpu
+        # sets ConstrainDevices=yes but TaskPlugin=task/none, so no device
+        # cgroup exists and `nvidia-smi -L` in a 2-GPU allocation lists all
+        # four. Two nodes then place servers on one card and one OOMs.
+        allow_list = slurm_gpu_allow_list()
+        if allow_list:
+            parts += [allow_list]
         # Everything after `--` is the command; without it a command that
         # starts with a dash would be parsed as an option to `run`.
         parts += ['--']

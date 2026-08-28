@@ -16,10 +16,8 @@ The cost: with ``reclaim: stop`` a cohort with more models than GPUs reloads
 weights repeatedly. Use ``reclaim: keep-warm``, where the lease bounds
 entitlement rather than container lifetime.
 
-Opt-in, because plenty of legitimate runs point at a server infer-stack does
-not manage -- OpenRouter, a hand-started mock, a colleague's shared vLLM --
-and for those an ``infer-stack run`` prefix turns a working card into one that
-fails looking up an endpoint no catalog has.
+Opt-in via ``--per_node_leasing``. Off by default because plenty of
+legitimate runs point at a server infer-stack does not manage.
 """
 
 from __future__ import annotations
@@ -29,27 +27,60 @@ import shlex
 
 from magnet.containers import ContainerProcessNode
 
-__all__ = ['LeasedProcessNode', 'leasing_is_enabled', 'LEASING_ENVVAR']
+__all__ = [
+    'LeasedProcessNode',
+    'configure',
+    'leasing_is_enabled',
+    'INSIDE_LEASE_ENVVAR',
+]
 
-#: Set truthy to render each node's command inside its own lease.
-LEASING_ENVVAR = 'MAGNET_PER_NODE_LEASING'
+#: Whether each node's command renders inside its own lease. **Opt-in**, set
+#: from a CLI argument by :func:`configure`. Off by default because plenty of
+#: legitimate runs point at a server infer-stack does not manage -- OpenRouter,
+#: a hand-started mock, a colleague's shared vLLM -- and for those, rendering
+#: an ``infer-stack run`` prefix would turn a working card into one that fails
+#: looking up an endpoint that was never in a catalog.
+_ENABLED = False
+
+
+def configure(enabled: bool = False) -> bool:
+    """
+    Set whether nodes lease their own endpoints, and return the setting.
+
+    Called from the CLI before scheduling. This is passed configuration, so it
+    arrives as an argument rather than from the environment; contrast
+    :data:`INSIDE_LEASE_ENVVAR`, which is a fact about the surrounding process
+    that only infer-stack can state.
+
+    Example:
+        >>> from magnet.leasing import configure, leasing_is_enabled
+        >>> configure(True)
+        True
+        >>> leasing_is_enabled()
+        True
+        >>> configure(False)
+        False
+    """
+    global _ENABLED
+    _ENABLED = bool(enabled)
+    return _ENABLED
 
 #: Exported by ``infer-stack run``. Its presence means we are already inside
-#: someone else's lease, which holds every endpoint it named, so acquiring
-#: again per node is pure overhead.
+#: someone else's lease, which already holds every endpoint it named, so
+#: acquiring again per node is pure overhead.
 INSIDE_LEASE_ENVVAR = 'INFER_STACK_LEASE_ID'
 
-_FALSEY = {'0', 'false', 'no', 'off', ''}
-
-
 def leasing_is_enabled() -> bool:
-    """Whether rendered commands should bracket themselves in a lease.
+    """
+    Whether rendered commands should bracket themselves in a lease.
 
     Requires an explicit opt-in, and stays off inside an outer lease so the
     two styles cannot nest by accident.
+
+    Returns:
+        bool
     """
-    explicit = os.environ.get(LEASING_ENVVAR, '')
-    if explicit.strip().lower() in _FALSEY:
+    if not _ENABLED:
         return False
     return not os.environ.get(INSIDE_LEASE_ENVVAR)
 
@@ -58,25 +89,29 @@ class LeasedProcessNode(ContainerProcessNode):
     """
     A node that acquires its endpoints for its own job.
 
-    Also a :class:`~magnet.containers.ContainerProcessNode`, so a node holding
-    a model can equally run in a pinned image; the lease ends up outside the
-    container.
+    Also a :class:`~magnet.containers.ContainerProcessNode`, so a node that
+    holds a model can equally run in a pinned image; the lease ends up
+    outside the container. Both layers are independently inert until asked
+    for.
 
     Subclasses declare :attr:`endpoint_params` -- the parameter names whose
-    *values* are catalog aliases. Override :meth:`resolve_endpoints` when the
-    alias is not the parameter value itself.
+    *values* are endpoint aliases in the catalog. Override
+    :meth:`resolve_endpoints` when the alias is not the parameter value
+    itself (e.g. a named model config that has to be looked up).
 
     Attributes:
         endpoint_params (tuple[str, ...]): parameter names holding aliases.
-        lease_ttl (str | None): a backstop for a hard-killed job, not a budget
-            -- the lease is released when the command ends. Generous on
-            purpose: a TTL expiring mid-job lets another lease reclaim the GPU
+        lease_ttl (str | None): TTL passed to ``infer-stack run``. This is a
+            backstop for a hard-killed job, not a budget -- the lease is
+            released when the command ends. Sized generously on purpose: a
+            TTL that expires mid-job would let another lease reclaim the GPU
             out from under it.
-        lease_timeout (str | int | None): readiness wait. Must exceed a cold
-            model load, which on a cold HF cache is minutes.
-        lease_queue (bool): wait for capacity rather than failing when the GPUs
-            are busy. On by default -- with a DAG scheduling more jobs than the
-            box has GPUs, busy is the normal case.
+        lease_timeout (str | int | None): how long to wait for readiness.
+            Must exceed a cold model load, which for a large model on a cold
+            HF cache is minutes, not seconds.
+        lease_queue (bool): wait for capacity instead of failing when the
+            GPUs are busy. On by default -- with a DAG scheduling more jobs
+            than the box has GPUs, "busy" is the normal case, not an error.
     """
 
     endpoint_params: tuple[str, ...] = ()
@@ -85,10 +120,16 @@ class LeasedProcessNode(ContainerProcessNode):
     lease_queue: bool = True
 
     def resolve_endpoints(self) -> list[str]:
-        """Catalog aliases this node's job needs, deduplicated, order kept.
+        """
+        Catalog aliases this node's job needs, in a stable order.
 
-        Empty values are dropped, so an optional model -- an extractor that
-        defaults to the answerer, say -- produces no bogus lease.
+        The default reads :attr:`endpoint_params` out of the node's resolved
+        configuration. Values that are empty are dropped, so an optional
+        model (an extractor that defaults to the answerer, say) does not
+        produce a bogus lease.
+
+        Returns:
+            list[str]: deduplicated aliases, order preserved.
         """
         config = self.final_config or {}
         names: list[str] = []
@@ -102,14 +143,21 @@ class LeasedProcessNode(ContainerProcessNode):
         return names
 
     def _wrap_command(self, command: str) -> str:
-        """Bracket the command in a lease when one is needed.
+        """
+        Bracket the command in a lease when one is needed.
 
         Called by :class:`~magnet.containers.ContainerProcessNode` *after* it
-        applies any ``docker run`` wrapper, so the lease ends up outside the
-        container. That order matters: acquiring a lease needs the Docker
-        daemon and the shared ledger, both on the host, and being inside means
-        the container inherits OPENAI_BASE_URL / OPENAI_API_KEY from the lease
-        with no extra plumbing.
+        has applied any ``docker run`` wrapper, so the lease ends up outside
+        the container. That order matters: acquiring a lease needs the Docker
+        daemon and the shared ledger, both of which live on the host, and
+        being inside means the container inherits ``OPENAI_BASE_URL`` /
+        ``OPENAI_API_KEY`` from the lease with no extra plumbing.
+
+        Args:
+            command (str): the command as built so far.
+
+        Returns:
+            str
         """
         if not leasing_is_enabled():
             return command
@@ -119,10 +167,10 @@ class LeasedProcessNode(ContainerProcessNode):
         return self._lease_prefix(names) + ' \\\n    ' + command
 
     def _lease_prefix(self, names: list[str]) -> str:
-        # ONE --endpoint with a comma-separated list. `infer-stack run` takes a
-        # single string, so repeating the flag does not accumulate -- the last
-        # one silently wins and every other model goes unleased, which stays
-        # invisible until something races for a GPU.
+        # ONE --endpoint with a comma-separated list. `infer-stack run` takes
+        # a single string here, so repeating the flag does not accumulate --
+        # the last one silently wins and every other model goes unleased.
+        # That failure is invisible until something races for a GPU.
         parts = ['infer-stack', 'run', '--endpoint', shlex.quote(','.join(names))]
         if self.lease_ttl:
             parts += ['--ttl', str(self.lease_ttl)]
@@ -130,7 +178,7 @@ class LeasedProcessNode(ContainerProcessNode):
             parts += ['--timeout', str(self.lease_timeout)]
         if self.lease_queue:
             parts += ['--queue']
-        # Everything after `--` is the command; without it a command starting
-        # with a dash is parsed as an option to `run`.
+        # Everything after `--` is the command; without it a command that
+        # starts with a dash would be parsed as an option to `run`.
         parts += ['--']
         return ' '.join(parts)

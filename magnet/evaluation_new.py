@@ -207,6 +207,16 @@ class NewEvaluationCLI(kwconf.Config):
         ),
     )
 
+    dry_run = kwconf.Flag(
+        False,
+        help=(
+            'Compile and report the campaign without running it: KWDagger is '
+            'scheduled with run=0, so it writes a driver script instead of '
+            'submitting jobs. Evidence already in the shared result store is '
+            'still discovered and the claim is still evaluated against it.'
+        ),
+    )
+
     verbose: bool = kwconf.Value(
         False, isflag=True, help='Verbose log output', group='logging'
     )
@@ -285,6 +295,7 @@ class NewEvaluationCLI(kwconf.Config):
                 'skip_existing',
                 'cache',
                 'max_configs',
+                'dry_run',
             ]
         }
         schedule_options['tmux_workers'] = resolve_tmux_workers(

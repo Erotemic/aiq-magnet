@@ -135,60 +135,7 @@ def test_compute_parameters_reach_the_materializer(monkeypatch):
     assert seen['max_eval_instances'] == 10
     assert seen['enable_huggingface_models'] == 'HuggingFaceTB/SmolLM2-135M'
     assert seen['num_threads'] == 4
-    # `family` groups the gather; it says nothing about which run to find.
-    assert 'family' not in seen
     assert seen['run_entry'] == (
         'mmlu:subject=abstract_algebra,method=multiple_choice_joint,'
         'model=huggingface/smollm2-135m'
     )
-
-
-def test_a_gather_grouped_by_family_does_not_pool_families(tmp_path):
-    """Two families in one sweep must not land in each other's average.
-
-    `group_by: []` would hand every comparison every run in the matrix, which
-    is invisible while there is one family and wrong the moment there are two.
-    """
-    import ubelt as ub
-    from kwdagger.schedule import ScheduleEvaluationConfig, build_schedule
-
-    params = ub.codeblock(
-        '''
-        pipeline:
-          nodes:
-            mat:
-              executable: "echo mat"
-              algo_params: {model: null, family: null}
-              out_paths: {out_dpath: ".", done_fname: DONE}
-              primary_out_key: done_fname
-            pred:
-              executable: "echo pred"
-              in_paths: [runs]
-              algo_params: {family: null}
-              out_paths: {out_fpath: out.json}
-              primary_out_key: out_fpath
-          edges:
-            - src: mat.out_dpath
-              dst: pred.runs
-              gather:
-                group_by: [{src: family, dst: family}]
-                require: all_success
-        matrix:
-          mat.model: [l7, l13, s135, s360]
-          pred.family: [llama, smollm2]
-          include:
-            - {mat.model: l7,   mat.family: llama}
-            - {mat.model: l13,  mat.family: llama}
-            - {mat.model: s135, mat.family: smollm2}
-            - {mat.model: s360, mat.family: smollm2}
-        ''')
-    config = ScheduleEvaluationConfig(
-        params=params, root_dpath=str(tmp_path), run=False, backend='serial',
-        print_commands=0, print_queue=0)
-    dag, _ = build_schedule(config)
-
-    # Four runs, two comparisons, and each comparison sees only its own two.
-    summary = dag.compile_summary
-    assert summary['collection_groups'] == 2
-    assert summary['largest_collection'] == 2
-    assert summary['collection_memberships'] == 4

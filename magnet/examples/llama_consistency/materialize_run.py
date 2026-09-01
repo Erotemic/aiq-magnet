@@ -43,8 +43,7 @@ def load_kwdagger_result(node, node_dpath):
     return util_dotdict.DotDict({})
 
 
-#: Passed to the materializer as given. `family` is not among them: it groups
-#: the gather edge and says nothing about which run to find.
+#: Passed to the materializer as given.
 _FORWARDED = [
     'max_eval_instances',
     'enable_huggingface_models',
@@ -85,13 +84,6 @@ class MaterializeLlamaRunCLI(kwconf.Config):
         None, required=True, help='MMLU subject, e.g. anatomy')
     method: str = kwconf.Value(
         'multiple_choice_joint', help='HELM adaptation method')
-    family: str = kwconf.Value(
-        None,
-        help=(
-            'which model family this run belongs to. Not used to locate the '
-            'run -- it is what the gather edge groups on, so a comparison '
-            'sees only its own family'
-        ))
     precomputed_root: str = kwconf.Value(
         None, required=True, help='root of the downloaded HELM cache')
 

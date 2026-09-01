@@ -47,6 +47,7 @@ from magnet.evaluation import (
     _reduce_results,
 )
 from magnet.schema import RECIPE_NAME_PATTERN, NewEvaluationRecipeSchema
+from magnet.theory.cards import report_from_card
 from magnet.utils.util_logger import setup_logging
 
 #: kwdagger's own default, used when there is no GPU to derive a cap from.
@@ -296,11 +297,13 @@ class NewEvaluationCLI(kwconf.Config):
         recipe.summarize()
 
 
-#: Evidence-row namespaces that record provenance rather than a value.
-#: `specified.params.<node>.<param>` is kwdagger's "this param was requested"
-#: flag and is always ``1``, so it must never fill a declared symbol or appear
-#: in a node view.
-PROVENANCE_ROW_PREFIXES = ('specified.',)
+#: Row namespaces a short name ranges over: what a node computed and what it
+#: ran with. Everything else in a row describes the run rather than the result
+#: -- `machine`, `resources`, `context`, and the always-1 `specified` flags --
+#: and stays reachable only by its qualified name. Keeping them out is what
+#: stops `machine.<node>.error`, which exists only when the machine probe
+#: failed, from colliding with an error a node measured.
+RESULT_ROW_NAMESPACES = ('metrics', 'params', 'resolved_params')
 
 
 class ClaimResultNamespace:
@@ -386,8 +389,9 @@ class ClaimResultNamespace:
         interior = set()
         for key in self._flat:
             parts = key.split('.')
-            if len(parts) > 1:
-                namespaces.add(parts[0])
+            if parts[0] not in RESULT_ROW_NAMESPACES:
+                continue
+            namespaces.add(parts[0])
             interior.update(parts[1:-1])
         return sorted(
             name
@@ -404,7 +408,7 @@ class ClaimResultNamespace:
         marker = f'.{node}.'
         candidates: Dict[str, Dict[str, Any]] = {}
         for key, value in self._flat.items():
-            if key.startswith(PROVENANCE_ROW_PREFIXES):
+            if key.split('.', 1)[0] not in RESULT_ROW_NAMESPACES:
                 continue
             index = key.find(marker)
             if index < 0:
@@ -838,7 +842,7 @@ def _fill_declared_symbols(
                     key: value
                     for key, value in results.items()
                     if key.endswith(f'.{name}')
-                    and not key.startswith(PROVENANCE_ROW_PREFIXES)
+                    and key.split('.', 1)[0] in RESULT_ROW_NAMESPACES
                 }
             if candidates:
                 # One bare name can appear under several namespaces -- the
@@ -1041,6 +1045,12 @@ def evaluate_new_recipe(
     """Schedule requested work, then evaluate the claim over available evidence."""
     _check_new_evaluation_recipe(recipe)
 
+    # Resolve static theory references before scheduling anything. A broken
+    # annotation or index should fail before jobs run, not after.
+    theory_report = report_from_card(
+        recipe.original_card, root=recipe.card_dpath
+    )
+
     recipe_output_path = recipe.output_path / recipe._run_hash
     recipe_output_path.ensuredir()
     setup_logging(verbose, recipe_output_path)
@@ -1181,6 +1191,9 @@ def evaluate_new_recipe(
     ) as file:
         json.dump(result_card.as_record(), file, indent=2, ensure_ascii=False)
         file.write('\n')
+
+    if theory_report is not None:
+        theory_report.write(recipe_output_path / 'theory.json')
 
     recipe.result_card = result_card
     recipe.claim.status = aggregate_result

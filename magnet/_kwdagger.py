@@ -446,9 +446,9 @@ def _is_missing_aggregate_value(value: Any) -> bool:
     if type(missing).__module__.startswith('numpy') and hasattr(missing, 'item'):
         # ``pd.isna`` of a list- or array-valued cell returns an elementwise
         # array, and ``.item()`` on anything but size 1 raises. Such a cell is a
-        # value, not a missing sentinel: a node that reports a list metric (a
-        # per-instance breakdown, a set of verifier names) must not crash
-        # evidence loading for the whole run.
+        # value, not a missing sentinel: neither a node reporting a list metric
+        # (a per-instance breakdown, a set of verifier names) nor a gathered
+        # collection-valued input must crash evidence loading for the whole run.
         if getattr(missing, 'size', 1) != 1:
             return False
         return bool(missing.item())

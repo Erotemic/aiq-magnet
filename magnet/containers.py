@@ -204,7 +204,10 @@ class ContainerCapability:
         """Build the ``docker run`` prefix for this node."""
         image = str(self.container_image or '').strip()
         parts = [
-            'docker', 'run', '--rm',
+            'docker', 'run', '--rm', '--init',
+            # An application at PID 1 can ignore Docker's forwarded SIGTERM.
+            # An init process forwards signals and reaps orphaned children,
+            # so cancelling the scheduler's client also stops the worker.
             # infer-stack exports a loopback endpoint; host networking keeps
             # that endpoint valid inside the container.
             '--network', 'host',

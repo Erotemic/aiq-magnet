@@ -5,6 +5,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Fixed
+
+* Containerized process nodes now use Docker's init process to forward
+  cancellation signals. A Python application running as container PID 1 could
+  otherwise ignore SIGTERM and survive after its scheduler killed the Docker
+  client. Explicit Docker arguments can still override the init setting.
+
 ### Added
 
 * Added `magnet.backends.aiq_evals.EvaluationNode`, which obtains one HELM, OLMo Eval, or Inspect evaluation through [aiq-magnet-evals](https://github.com/Erotemic/aiq-magnet-evals) (optional extra `aiq-magnet[aiq-magnet-evals]`). Each node resolves its measurement identity in its own host or container environment before scheduling, projects exactly one evidence row, and recomputes that row from the validated run whenever it is loaded.

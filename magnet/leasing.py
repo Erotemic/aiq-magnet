@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import os
 import shlex
+import sys
 from collections.abc import Mapping
 
 from kwdagger import Pipeline
@@ -32,6 +33,9 @@ class LeaseSettings:
 
     #: Restrict leased nodes to the GPUs allocated by Slurm.
     allowed_gpus: bool = True
+
+    #: Borrow endpoints from a scheduler-owned pool, without a new lease.
+    pool_descriptor: str | None = None
 
     def apply(self, pipeline: Pipeline) -> None:
         """Apply these invocation settings to every leasable node in a DAG."""
@@ -87,6 +91,7 @@ class LeaseCapability:
     lease_queue: bool = True
     lease_enabled: bool = False
     lease_allowed_gpus: bool = True
+    serving_pool_descriptor: str | None = None
 
     def leasing_is_enabled(self) -> bool:
         """Whether this node should bracket its command in a lease."""
@@ -104,6 +109,7 @@ class LeaseCapability:
         """Apply invocation-level leasing and GPU-allocation settings."""
         self.lease_enabled = bool(settings.enabled)
         self.lease_allowed_gpus = bool(settings.allowed_gpus)
+        self.serving_pool_descriptor = str(settings.pool_descriptor) if settings.pool_descriptor is not None else None
 
     def resolve_lease_endpoints(self) -> list[str]:
         """Return non-empty endpoint aliases, deduplicated in declaration order."""
@@ -120,6 +126,14 @@ class LeaseCapability:
 
     def wrap_with_lease(self, command: str) -> str:
         """Wrap ``command`` with ``infer-stack run`` when leasing is enabled."""
+        if self.serving_pool_descriptor:
+            names = self.resolve_lease_endpoints()
+            if names:
+                return shlex.join([
+                    sys.executable, '-m', 'magnet.serving_pool',
+                    '--descriptor', self.serving_pool_descriptor,
+                    '--endpoints', ','.join(names), '--', 'bash', '-c', command,
+                ])
         if not self.leasing_is_enabled():
             return command
         names = self.resolve_lease_endpoints()

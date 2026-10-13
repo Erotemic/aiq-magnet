@@ -25,6 +25,32 @@ pip install 'aiq-magnet[all]'       # everything, plus the test tools
 Importing a HELM-backed module without the extra raises
 ``MissingOptionalDependency`` naming the extra to install.
 
+## Borrowing a Slurm serving pool (experimental)
+
+A scheduler integration can reserve GPUs once for model serving, then run
+CPU-only DAG clients using `--serving_pool_descriptor=/private/pool.json` on
+`python -m magnet.evaluation_new`. Programmatic callers use
+`LeaseSettings(pool_descriptor=path)`. Nodes declare their required endpoint
+aliases with `endpoint_params`, as they do for per-node leasing. Existing
+per-node leasing remains unchanged and is still the default managed route.
+
+The version-1 descriptor is a same-user, mode-0600 execution record containing
+the host, owner Slurm job ID, infer-stack ledger/lease identity, protected
+endpoint aliases, endpoint environment and a `max_clients` bound. It does not
+grant or renew a lease. Clients verify the owner's RUNNING state/UID and the
+active, unexpired ledger claims before starting and during execution. Kernel
+file locks bound concurrent clients and release on process loss. Clients
+reserve no extra GPUs, expose no CUDA devices to their command, and stop
+their child on owner loss or cancellation. Endpoint credentials are passed
+through an allowlisted environment and never printed by the guard.
+
+These execution settings do not enter process identity. Cached DAG nodes
+remain cached. The scheduler integration owns descriptor creation, physical
+GPU placement, startup readiness, stopping serving engines and cancellation
+of queued clients; MAGNET only guards client execution. This Linux/Slurm path
+requires the infer-stack leases/claims ledger schema and does not provide an
+atomic hard-kill/host-crash cleanup guarantee or Kubernetes ownership support.
+
 ## Developer Quick Start
 
 Quick start: install and run tests

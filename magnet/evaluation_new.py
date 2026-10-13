@@ -213,6 +213,11 @@ class NewEvaluationCLI(kwconf.Config):
         group='containers',
     )
 
+    serving_pool_descriptor: str | None = kwconf.Value(
+        None, parser=str,
+        help='Borrow a live scheduler-owned serving pool; guard clients on owner loss.',
+    )
+
     skip_existing = kwconf.Value(
         False,
         help=(
@@ -365,6 +370,7 @@ class NewEvaluationCLI(kwconf.Config):
         schedule_options['lease_settings'] = leasing.LeaseSettings(
             enabled=bool(args['per_node_leasing']),
             allowed_gpus=bool(args['lease_allowed_gpus']),
+            pool_descriptor=args['serving_pool_descriptor'],
         )
         recipe.evaluate(
             verbose=bool(args.verbose),

@@ -118,6 +118,9 @@ class MaterializeHelmRunNode(kwdagger.ProcessNode):
         emitting placeholders such as ``--foo=None`` or bare flags for empty
         list defaults.
         """
+        executable = self.executable
+        if executable is None:
+            raise ValueError('materialization node requires an executable')
         filtered_config = {}
         for key, value in self.final_config.items():
             if value is None:
@@ -138,8 +141,8 @@ class MaterializeHelmRunNode(kwdagger.ProcessNode):
                 parts.append(f'    --{key}={value_text} \\')
         argstr = '\n'.join(parts).lstrip().rstrip('\\')
         if argstr:
-            return self.executable + ' \\\n    ' + argstr
-        return self.executable
+            return executable + ' \\\n    ' + argstr
+        return executable
 
     # Optional: You can define load_result if you want kwdagger aggregate to read
     # something out of this node. Usually this node is an “adapter/materializer”

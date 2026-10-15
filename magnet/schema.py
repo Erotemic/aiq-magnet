@@ -279,7 +279,8 @@ class EvaluationCardSchema(BaseModel):
 class NewEvaluationKWDaggerSchema(KWDaggerSchema):
     """KWDagger block required by the replacement evaluation API."""
 
-    result_node: str
+    # Pydantic validation intentionally narrows the legacy schema's fields.
+    result_node: str  # ty: ignore[invalid-mutable-override]
 
 
 #: A recipe `name` is used as an identifier -- a tmux session name, a path
@@ -316,8 +317,9 @@ class NewEvaluationRecipeSchema(EvaluationCardSchema):
     """
 
     name: str | None = Field(default=None, pattern=RECIPE_NAME_PATTERN)
-    kwdagger: NewEvaluationKWDaggerSchema
-    pipeline: None = None
+    # Pydantic validation intentionally narrows the legacy schema's fields.
+    kwdagger: NewEvaluationKWDaggerSchema  # ty: ignore[invalid-mutable-override]
+    pipeline: None = None  # ty: ignore[invalid-mutable-override]
     evidence: EvidenceSchema = Field(default_factory=EvidenceSchema)
 
     @model_validator(mode='after')

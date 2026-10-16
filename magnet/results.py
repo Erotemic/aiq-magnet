@@ -205,8 +205,6 @@ def render_result(bundle: ResultBundle, *, format: str = 'markdown') -> str:
             lines.extend(_present_value('Consumed evidence fields', cell['consumed'], 4))
     if bundle.execution:
         lines.extend(_present_value('Execution snapshot', bundle.execution, 2))
-    lines += ['Presentation generated from serialized results. Logs and original artifact '
-              'paths are not required to read this report.', '']
     text = '\n'.join(line.rstrip() for line in lines)
     if format == 'text':
         import re

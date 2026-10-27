@@ -56,8 +56,14 @@ def test_named_variants_have_one_card_and_report_after_sources_are_removed(tmp_p
     assert '| Baseline | VERIFIED | 0.8 |' in report
     assert '| Expanded | VERIFIED | 0.9 |' in report
     assert 'The gain persists with more models.' in report
-    assert '## Claim' not in report
-    assert '## Claim' in render_result(stored, details=True)
+    assert 'Shared scientific scope.' in report
+    assert report.count('## Claim\n') == 1
+    assert '#### Measurements' in report
+    assert 'Variant: **Expanded**' in report
+    assert '## Variant provenance' in report
+    assert '## Claim' not in render_result(stored, details=False)
+    assert (output / 'report.md').read_text() == report
+    assert 'Presentation generated from serialized results.' not in report
     assert len(list(output.rglob('report.md'))) == 1
     assert verify_result_bundle(output)['valid']
     for cell in stored.cells.values():
@@ -113,5 +119,10 @@ def test_cli_combines_and_shows_the_whole_variant_table(tmp_path, capsys):
     assert '| A | VERIFIED | 0.8 |' in text
     assert '| B | VERIFIED | 0.9 |' in text
     assert '# A changed operating condition' in text
+    assert 'Shared scientific scope.' in text
+    assert '## Claim results' in text
+    assert 'Variant: **B**' in text
+    assert MagnetCLI.main(argv=['results', 'show', str(output), '--details=0']) == 0
+    assert '## Claim' not in capsys.readouterr().out
     assert not (output / 'report_notes.md').exists()
     assert load_result_bundle(output).card['claim'] == yaml.safe_load((a / 'card.yaml').read_text())['claim']

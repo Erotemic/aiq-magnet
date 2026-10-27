@@ -48,9 +48,11 @@ Then collect them into one native result:
 
    magnet results combine variants.yaml review/combined
    magnet results show review/combined
-   magnet results show review/combined --details
+   magnet results show review/combined --details=0
 
-The default report contains only named variants and declared display metrics.
+The default report uses the standard layout: card description, claim,
+measurements and provenance, with a named variant table and labeled claim
+results. ``--details=0`` selects only the variant table for a short readout.
 ``--title`` names the operating condition without changing the claim.
 ``--notes`` explicitly appends manually authored Markdown; MAGNET does not
 derive that text from measurements.

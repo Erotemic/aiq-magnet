@@ -18,7 +18,7 @@ class ShowResultCLI(kwconf.Config):
     path = kwconf.Value(None, required=True, position=1)
     format = kwconf.Value('markdown', choices=['markdown', 'text', 'json'])
     output = kwconf.Value(None, help='Write the presentation here instead of stdout')
-    details = kwconf.Flag(False, help='Include full claim and evidence details for collected variants')
+    details = kwconf.Flag(True, help='Include full claim and evidence details; --details=0 shows only the variant table')
 
     @classmethod
     def main(cls, argv=None, **kwargs):

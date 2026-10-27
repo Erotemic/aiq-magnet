@@ -166,14 +166,12 @@ def _present_value(name: str, value: Any, level: int = 4) -> list[str]:
     return [f'- **{name}:** {_cell(value)}', '']
 
 
-def _render_variants(bundle: ResultBundle) -> str:
+def _variant_table(bundle: ResultBundle) -> list[str]:
     metadata = {name: spec['metadata'] for name, spec in bundle.card.get('symbols', {}).items()
                 if isinstance(spec, dict) and (spec.get('metadata') or {}).get('display')}
     headings = ['Variant', 'Result']
     headings.extend(spec.get('display_name', name) for name, spec in metadata.items())
-    lines = [f"# {bundle.card.get('title', bundle.card.get('name', 'Evaluation'))}", '',
-             f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**", '',
-             '| ' + ' | '.join(_cell(name) for name in headings) + ' |',
+    lines = ['| ' + ' | '.join(_cell(name) for name in headings) + ' |',
              '| ' + ' | '.join('---' for _ in headings) + ' |']
     for label, variant in bundle.variants.items():
         for key in variant['claims']:
@@ -185,13 +183,20 @@ def _render_variants(bundle: ResultBundle) -> str:
                     value = f'{value:.4g}'
                 values.append(value)
             lines.append('| ' + ' | '.join(_cell(value) for value in values) + ' |')
+    return lines + ['']
+
+
+def _render_variants(bundle: ResultBundle) -> str:
+    lines = [f"# {bundle.card.get('title', bundle.card.get('name', 'Evaluation'))}", '',
+             f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**", '']
+    lines.extend(_variant_table(bundle))
     notes = bundle.root / 'report_notes.md'
     if notes.is_file():
         lines.extend(['', notes.read_text().strip()])
     return '\n'.join(lines) + '\n'
 
 
-def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bool = False) -> str:
+def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bool = True) -> str:
     """Present stored values. Never evaluate Python claims or load pipelines."""
     if format == 'json':
         data = {'card': bundle.card, 'verdict': bundle.verdict,
@@ -211,6 +216,9 @@ def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bo
     lines = [f"# {bundle.card.get('title', bundle.card.get('name', 'Evaluation'))}", '',
              f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**", '',
              str(bundle.card.get('description') or ''), '']
+    if bundle.variants:
+        lines += ['## Variants', '']
+        lines.extend(_variant_table(bundle))
     if not bundle.verdict:
         lines += ['No aggregate verdict was recorded. Available execution metadata follows; '
                   'this is not a claim verdict.', '']
@@ -226,7 +234,11 @@ def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bo
         fence += '`'
     lines += ['## Claim', '', fence + 'python', python, fence, '', '## Claim results', '']
     for key, cell in bundle.cells.items():
-        lines += [f'### {key}', '', f"Status: **{cell.get('status', 'UNKNOWN')}**", '',
+        lines += [f'### {key}', '']
+        labels = [label for label, variant in bundle.variants.items() if key in variant['claims']]
+        if labels:
+            lines += ['Variant: **' + ', '.join(labels) + '**', '']
+        lines += [f"Status: **{cell.get('status', 'UNKNOWN')}**", '',
                   str(cell.get('output') or ''), '']
         measurements = bundle.measurements(cell)
         if measurements:
@@ -242,6 +254,19 @@ def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bo
             lines.extend(_present_value('Consumed evidence fields', cell['consumed'], 4))
     if bundle.execution:
         lines.extend(_present_value('Execution snapshot', bundle.execution, 2))
+    if bundle.variants:
+        lines += ['## Variant provenance', '']
+        rows = []
+        for label, variant in bundle.variants.items():
+            execution = variant.get('execution') or {}
+            rows.append({'Variant': label, 'Source record': variant.get('source_record'),
+                         'Started': execution.get('started'), 'Ended': execution.get('ended'),
+                         'State': execution.get('state'), 'Host': execution.get('host'),
+                         'Software': _scalar(execution.get('software'))})
+        lines.extend(_present_value('Source executions', rows, 3))
+    notes = bundle.root / 'report_notes.md'
+    if notes.is_file():
+        lines += [notes.read_text().strip(), '']
     text = '\n'.join(line.rstrip() for line in lines)
     if format == 'text':
         import re

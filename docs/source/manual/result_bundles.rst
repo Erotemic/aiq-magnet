@@ -46,12 +46,15 @@ Then collect them into one native result:
 
 .. code-block:: console
 
-   magnet results combine variants.yaml review/combined --notes=findings.md
+   magnet results combine variants.yaml review/combined
    magnet results show review/combined
    magnet results show review/combined --details
 
-The default report is one table of named variants and declared display metrics,
-followed by optional Markdown findings. One ``card.yaml`` holds the common claim
+The default report contains only named variants and declared display metrics.
+``--title`` names the operating condition without changing the claim.
+``--notes`` explicitly appends manually authored Markdown; MAGNET does not
+derive that text from measurements.
+One ``card.yaml`` holds the common claim
 and default configuration; ``variants.json`` preserves each override, source
 record and execution metadata. Scientific descriptions, claims and symbols
 must agree. Claim records stay byte-identical, verdicts use the card's existing

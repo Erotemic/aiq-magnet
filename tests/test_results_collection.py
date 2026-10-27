@@ -77,7 +77,8 @@ def test_falsified_variant_is_preserved_in_aggregate(tmp_path):
 def test_adding_a_variant_preserves_existing_labels_and_overrides(tmp_path):
     a = make_result(tmp_path / 'a', 'a', .8)
     b = make_result(tmp_path / 'b', 'b', .9)
-    combined = combine_result_bundles({'A': a, 'B': b}, tmp_path / 'combined')
+    combined = combine_result_bundles({'A': a, 'B': b}, tmp_path / 'combined',
+                                     title='A named operating condition')
     c = make_result(tmp_path / 'c', 'c', 1.0)
     result = combine_result_bundles({'Previous': combined, 'C': c}, tmp_path / 'next')
     stored = load_result_bundle(result)
@@ -105,8 +106,12 @@ def test_cli_combines_and_shows_the_whole_variant_table(tmp_path, capsys):
     sources = tmp_path / 'variants.yaml'
     sources.write_text(yaml.safe_dump({'A': str(a), 'B': str(b)}))
     output = tmp_path / 'combined'
-    assert MagnetCLI.main(argv=['results', 'combine', str(sources), str(output)]) == 0
+    assert MagnetCLI.main(argv=['results', 'combine', str(sources), str(output),
+                               '--title=A changed operating condition']) == 0
     assert MagnetCLI.main(argv=['results', 'show', str(output)]) == 0
     text = capsys.readouterr().out
     assert '| A | VERIFIED | 0.8 |' in text
     assert '| B | VERIFIED | 0.9 |' in text
+    assert '# A changed operating condition' in text
+    assert not (output / 'report_notes.md').exists()
+    assert load_result_bundle(output).card['claim'] == yaml.safe_load((a / 'card.yaml').read_text())['claim']

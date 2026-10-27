@@ -76,6 +76,7 @@ class CombineResultsCLI(kwconf.Config):
     sources = kwconf.Value(None, required=True, position=1, help='YAML/JSON mapping of labels to result paths')
     destination = kwconf.Value(None, required=True, position=2)
     notes = kwconf.Value(None, help='Markdown file containing findings and limitations for the report')
+    title = kwconf.Value(None, help='Presentation title for the collected card')
 
     @classmethod
     def main(cls, argv=None, **kwargs):
@@ -87,7 +88,7 @@ class CombineResultsCLI(kwconf.Config):
         if not isinstance(sources, dict):
             raise ValueError('sources must map variant labels to result paths')
         notes = Path(args.notes).read_text() if args.notes else ''
-        print(combine_result_bundles(sources, args.destination, notes=notes))
+        print(combine_result_bundles(sources, args.destination, notes=notes, title=args.title))
 
 
 class ResultsCLI(kwconf.ModalCLI):

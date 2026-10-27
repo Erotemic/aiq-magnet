@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from os import PathLike
 from pathlib import Path
 
+import yaml
+
 from magnet.evaluation import (
     Metric,
     _calculate_metrics,
@@ -22,7 +24,8 @@ from magnet.results import (
 
 
 def combine_result_bundles(
-    sources: Mapping[str, str | PathLike[str]], destination: str | PathLike[str], *, notes: str = ''
+    sources: Mapping[str, str | PathLike[str]], destination: str | PathLike[str], *,
+    notes: str = '', title: str | None = None,
 ) -> Path:
     """Keep one card and aggregate verdict, with named variants and unchanged cells.
 
@@ -33,7 +36,7 @@ def combine_result_bundles(
         raise ValueError('at least one named source is required')
     bundles = {label: load_result_bundle(path) for label, path in sources.items()}
     first = next(iter(bundles.values()))
-    common_fields = ('name', 'title', 'description', 'claim', 'symbols', 'claim_aggregation_strategy')
+    common_fields = ('name', 'description', 'claim', 'symbols', 'claim_aggregation_strategy')
     for label, bundle in bundles.items():
         checked = verify_result_bundle(bundle.root)
         if not checked['valid']:
@@ -52,6 +55,9 @@ def combine_result_bundles(
     with tempfile.TemporaryDirectory(prefix='.magnet-combine-', dir=destination.parent) as folder:
         staging = Path(folder)
         shutil.copyfile(first.root / 'card.yaml', staging / 'card.yaml')
+        if title is not None:
+            card = dict(first.card, title=title)
+            (staging / 'card.yaml').write_text(yaml.safe_dump(card, sort_keys=False))
         metadata_path = first.root / 'symbol_metadata.json'
         metadata = (json.loads(metadata_path.read_text()) if metadata_path.exists()
                     else _parse_symbol_metadata(first.card.get('symbols', {})))

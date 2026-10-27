@@ -37,6 +37,28 @@ terminal-node measurements are shown, including nested records. Inherited
 ancestor fields in a flattened gather row are not a lossless archive of all
 producer instances; use supporting artifacts for refitting or deeper audits.
 
+Combine variants of one card
+----------------------------
+
+Put labels and saved result directories in a YAML mapping, for example
+``baseline: evaluation_runs/BASELINE`` and ``expanded: evaluation_runs/EXPANDED``.
+Then collect them into one native result:
+
+.. code-block:: console
+
+   magnet results combine variants.yaml review/combined --notes=findings.md
+   magnet results show review/combined
+   magnet results show review/combined --details
+
+The default report is one table of named variants and declared display metrics,
+followed by optional Markdown findings. One ``card.yaml`` holds the common claim
+and default configuration; ``variants.json`` preserves each override, source
+record and execution metadata. Scientific descriptions, claims and symbols
+must agree. Claim records stay byte-identical, verdicts use the card's existing
+aggregation rule, and metrics use their declared aggregation strategies.
+No execution or refitting occurs. Available exported artifacts and terminal
+measurements are copied so the combined result remains portable.
+
 Recover a readout from surviving computation outputs
 --------------------------------------------------
 

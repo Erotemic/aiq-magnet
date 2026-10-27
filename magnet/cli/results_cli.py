@@ -5,8 +5,11 @@ from pathlib import Path
 import kwconf
 
 from magnet.results import (
-    discover_result_bundles, export_result_bundle, load_result_bundle,
-    render_result, verify_result_bundle,
+    discover_result_bundles,
+    export_result_bundle,
+    load_result_bundle,
+    render_result,
+    verify_result_bundle,
 )
 
 
@@ -15,12 +18,13 @@ class ShowResultCLI(kwconf.Config):
     path = kwconf.Value(None, required=True, position=1)
     format = kwconf.Value('markdown', choices=['markdown', 'text', 'json'])
     output = kwconf.Value(None, help='Write the presentation here instead of stdout')
+    details = kwconf.Flag(False, help='Include full claim and evidence details for collected variants')
 
     @classmethod
     def main(cls, argv=None, **kwargs):
         args = cls.cli(argv=argv, data=kwargs, strict=True)
         bundle = load_result_bundle(args.path)
-        text = render_result(bundle, format=args.format)
+        text = render_result(bundle, format=args.format, details=args.details)
         if args.output:
             target = Path(args.output).absolute()
             if target.parent == bundle.root or target.is_relative_to(bundle.root / 'results'):
@@ -67,8 +71,28 @@ class VerifyResultCLI(kwconf.Config):
         return 0 if result['valid'] else 1
 
 
+class CombineResultsCLI(kwconf.Config):
+    """Collect named saved variants of one card into one result and report."""
+    sources = kwconf.Value(None, required=True, position=1, help='YAML/JSON mapping of labels to result paths')
+    destination = kwconf.Value(None, required=True, position=2)
+    notes = kwconf.Value(None, help='Markdown file containing findings and limitations for the report')
+
+    @classmethod
+    def main(cls, argv=None, **kwargs):
+        import kwutil
+
+        from magnet.results_collection import combine_result_bundles
+        args = cls.cli(argv=argv, data=kwargs, strict=True)
+        sources = kwutil.Yaml.coerce(args.sources)
+        if not isinstance(sources, dict):
+            raise ValueError('sources must map variant labels to result paths')
+        notes = Path(args.notes).read_text() if args.notes else ''
+        print(combine_result_bundles(sources, args.destination, notes=notes))
+
+
 class ResultsCLI(kwconf.ModalCLI):
     """Read, present, export and check existing serialized evaluation results."""
+    combine = CombineResultsCLI
 
 
 class ListResultsCLI(kwconf.Config):

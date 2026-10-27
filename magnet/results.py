@@ -19,7 +19,8 @@ import yaml
 
 MANIFEST = 'bundle_manifest.json'
 SUPPORT_FILES = ('requested_runs.json', 'symbol_metadata.json', 'theory.json',
-                 'provenance.json', 'execution.json', 'invocation.json')
+                 'provenance.json', 'execution.json', 'invocation.json',
+                 'variants.json', 'report_notes.md')
 
 
 def _mapping(path: Path, *, yaml_file: bool = False) -> dict:
@@ -57,6 +58,7 @@ class ResultBundle:
     missing_claims: list[str] = field(default_factory=list)
     execution: dict = field(default_factory=dict)
     manifest: dict = field(default_factory=dict)
+    variants: dict = field(default_factory=dict)
 
     def artifact_path(self, original: str) -> Path:
         """Prefer exported locations over original-machine provenance paths."""
@@ -101,7 +103,8 @@ def load_result_bundle(path: str | os.PathLike) -> ResultBundle:
             missing.append(key)
     return ResultBundle(root, card, verdict, cells, missing,
                         _mapping(root / 'execution.json') if (root / 'execution.json').is_file() else {},
-                        _mapping(root / MANIFEST) if (root / MANIFEST).is_file() else {})
+                        _mapping(root / MANIFEST) if (root / MANIFEST).is_file() else {},
+                        _mapping(root / 'variants.json') if (root / 'variants.json').is_file() else {})
 
 
 def discover_result_bundles(path: str | os.PathLike) -> list[dict]:
@@ -163,14 +166,48 @@ def _present_value(name: str, value: Any, level: int = 4) -> list[str]:
     return [f'- **{name}:** {_cell(value)}', '']
 
 
-def render_result(bundle: ResultBundle, *, format: str = 'markdown') -> str:
+def _render_variants(bundle: ResultBundle) -> str:
+    metadata = {name: spec['metadata'] for name, spec in bundle.card.get('symbols', {}).items()
+                if isinstance(spec, dict) and (spec.get('metadata') or {}).get('display')}
+    headings = ['Variant', 'Result']
+    headings.extend(spec.get('display_name', name) for name, spec in metadata.items())
+    lines = [f"# {bundle.card.get('title', bundle.card.get('name', 'Evaluation'))}", '',
+             f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**", '',
+             '| ' + ' | '.join(_cell(name) for name in headings) + ' |',
+             '| ' + ' | '.join('---' for _ in headings) + ' |']
+    for label, variant in bundle.variants.items():
+        for key in variant['claims']:
+            cell = bundle.cells[key]
+            values = [label, cell['status']]
+            for name in metadata:
+                value = cell.get('symbols', {}).get(name, cell.get('evidence', {}).get(name))
+                if isinstance(value, float):
+                    value = f'{value:.4g}'
+                values.append(value)
+            lines.append('| ' + ' | '.join(_cell(value) for value in values) + ' |')
+    notes = bundle.root / 'report_notes.md'
+    if notes.is_file():
+        lines.extend(['', notes.read_text().strip()])
+    return '\n'.join(lines) + '\n'
+
+
+def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bool = False) -> str:
     """Present stored values. Never evaluate Python claims or load pipelines."""
     if format == 'json':
-        return json.dumps({'card': bundle.card, 'verdict': bundle.verdict,
-                           'cells': bundle.cells, 'missing_claims': bundle.missing_claims,
-                           'execution': bundle.execution}, indent=2, ensure_ascii=False) + '\n'
+        data = {'card': bundle.card, 'verdict': bundle.verdict,
+                'cells': bundle.cells, 'missing_claims': bundle.missing_claims,
+                'execution': bundle.execution}
+        if bundle.variants:
+            data['variants'] = bundle.variants
+        return json.dumps(data, indent=2, ensure_ascii=False) + '\n'
     if format not in {'markdown', 'text'}:
         raise ValueError(f'unknown report format: {format}')
+    if bundle.variants and not details:
+        text = _render_variants(bundle)
+        if format == 'text':
+            import re
+            text = re.sub(r'^#{1,6} ', '', text, flags=re.MULTILINE).replace('**', '')
+        return text
     lines = [f"# {bundle.card.get('title', bundle.card.get('name', 'Evaluation'))}", '',
              f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**", '',
              str(bundle.card.get('description') or ''), '']
@@ -242,7 +279,7 @@ def export_result_bundle(source: str | os.PathLike, destination: str | os.PathLi
     with tempfile.TemporaryDirectory(prefix='.magnet-export-', dir=destination.parent) as folder:
         staging = Path(folder) / 'bundle'
         staging.mkdir()
-        manifest = {'schema_version': 1, 'format': 'magnet.result-bundle',
+        manifest: dict[str, Any] = {'schema_version': 1, 'format': 'magnet.result-bundle',
                     'source_record': str(bundle.root), 'files': {}, 'artifacts': [],
                     'missing_supporting': [], 'supporting': supporting}
 
@@ -281,6 +318,10 @@ def export_result_bundle(source: str | os.PathLike, destination: str | os.PathLi
                 original = item.get('expected_output')
                 if original:
                     wanted[original] = (item['node'], item['process_id'])
+        if supporting == 'requested':
+            for item in bundle.manifest.get('artifacts', []):
+                if not nodes or item['node'] in nodes:
+                    wanted[item['source']] = (item['node'], item['process_id'])
         for i, (original, (node, process)) in enumerate(sorted(wanted.items())):
             path = bundle.artifact_path(original)
             if not path.is_file():

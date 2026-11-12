@@ -205,6 +205,65 @@ def test_a_qualified_symbol_names_exactly_one_evidence_column():
     assert filled['specified.params.emit.seed']['value'] == 1
 
 
+def test_null_measurement_allows_claim_to_report_inconclusive():
+    """Unavailable numeric output remains null and does not crash readout."""
+    from magnet.evaluation import Symbols
+
+    row = {'metrics.emit.score': None, 'metrics.emit.status': 'INCONCLUSIVE',
+           'metrics.emit.detail': 'insufficient observations'}
+    declared, measured = evaluation_new._fill_declared_symbols(
+        {'emit.score': {'metadata': {'display_name': 'Score'}}}, row)
+    cell = evaluation_new._evaluate_claim_cell(
+        "if metrics.emit.status == 'INCONCLUSIVE':\n"
+        "    raise RuntimeError(metrics.emit.detail)\n"
+        'assert metrics.emit.score < 1',
+        Symbols(declared), row, 'emit-case', measured)
+    assert cell.status == 'INCONCLUSIVE'
+    assert 'insufficient observations' in cell.output
+    assert cell.evidence_row['metrics.emit.score'] is None
+
+
+def test_explicit_null_literal_and_null_computed_placeholder_are_distinct():
+    from magnet.evaluation import Symbol
+
+    assert Symbol('optional', {'value': None}).eval() is None
+    assert Symbol('computed', {'value': None, 'type': 'int',
+                              'python': 'computed = 7'}).eval() == 7
+
+
+def test_null_measurement_readout_writes_native_bundle(kwdagger_recipe_fpath, tmp_path, monkeypatch):
+    """A result with no numeric estimate still has a reportable claim cell."""
+    data = yaml.safe_load(kwdagger_recipe_fpath.read_text())
+    data['symbols'] = {'emit.score': {'metadata': {
+        'display_name': 'Score', 'define_metric': {
+            'objective': 'minimize', 'aggregation_strategy': {'type': 'mean'}}}}}
+    data['claim'] = {'python': "raise RuntimeError(metrics.emit.detail)"}
+    kwdagger_recipe_fpath.write_text(yaml.safe_dump(data))
+
+    class SavedProcessor:
+        def __init__(self, spec, root_dpath):
+            self.result_node = 'emit'
+
+        def schedule(self, **kwargs):
+            assert kwargs['dry_run'] is True
+
+        def inspect_requested_runs(self):
+            return []
+
+        def load_available_result_rows(self):
+            return [{'key': 'emit-case', 'artifact': None, 'row': {
+                'metrics.emit.score': None,
+                'metrics.emit.detail': 'insufficient observations'}}]
+
+    monkeypatch.setattr(evaluation_new, 'KWDaggerProcessor', SavedProcessor)
+    recipe = NewEvaluationRecipe(kwdagger_recipe_fpath, tmp_path / 'out')
+    result = recipe.evaluate(backend='serial', readout_only=True)
+    assert result.result == 'INCONCLUSIVE'
+    assert result.metrics == {}
+    saved = json.loads((recipe.output_path / recipe._run_hash / 'verdict.json').read_text())
+    assert saved['result'] == 'INCONCLUSIVE'
+
+
 def test_unqualified_symbol_names_still_match_the_last_segment():
     """Legacy cards name a bare symbol; that keeps resolving."""
     row = {'metrics.emit.score': 0.1, 'params.emit.seed': 7}

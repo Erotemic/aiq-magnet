@@ -638,6 +638,10 @@ class Symbol:
         self.sweep: list[Any] | None = spec.get('sweep')
         self.type = spec.get('type', 'List[int]')
         self.definition = spec.get('python', '')
+        # An explicit null can report an unavailable pipeline measurement.
+        # It is a literal value, while an absent value still needs resolution.
+        # Retain the legacy null-plus-python spelling for computed symbols.
+        self._literal_value = 'value' in spec and not self.definition
         self.dependencies = self._resolve_dependencies(name, spec)
         self.metadata = spec.get('metadata')
 
@@ -689,7 +693,7 @@ class Symbol:
 
         FIXME: type verification is currently limited and hacky
         """
-        if self.value is None:
+        if self.value is None and not self._literal_value:
             logger.debug(f'Resolving: {self.name}')
             exec(self.definition, context)
             if self._check_type(self.type, context[self.name]):

@@ -3,9 +3,29 @@ Mathematical Assurance of Generative AI Network Evaluation Toolkit
 
 ## Introduction
 
-This early version of the MAGNET package is intended to provide a look into how we're approaching TA1 evaluation (for algorithms that don't require model training or finetuning).  Currently we only provide a "predictor" style interface, but plan to extend the framework to support other TA1 algorithms that don't fit into this bucket.
+MAGNET runs evaluation recipes through kwdagger and publishes measured symbols,
+their scope and provenance as evaluation cards. Saved cards support reporting,
+table selection, explicit descriptive analysis and portable export. Expensive
+computations remain cached independently of their later interpretation.
 
 **IMPORTANT:** As this is a preliminary release, interfaces are subject to change.
+
+## Measurement-first evaluation cards (development)
+
+Recipes can publish scalar or table symbols from independent result nodes,
+with units and column descriptions. A Boolean claim is optional. The native
+`evaluation.json` and its reader organize results around measurements; older
+assertion outputs remain available for compatibility.
+
+```bash
+magnet evaluate_new magnet/examples/measurements/card.yaml --backend=tmux --output_path=evaluation_runs
+magnet results symbols evaluation_runs/RECORD
+magnet results table evaluation_runs/RECORD --node=measure --expand=metrics.measure.quality
+```
+
+The example uses synthetic observations on CPU. See the
+[measurement-card guide](docs/source/manual/measurement_cards.rst) for scoped
+analysis, file-backed tables, Python access and portable evidence.
 
 ## Installing
 

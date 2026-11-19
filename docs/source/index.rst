@@ -20,6 +20,7 @@ Welcome to aiq_magnet's documentation!
    auto/modules
    manual/theory_links
    manual/result_bundles
+   manual/measurement_cards
 
 
 Indices and tables

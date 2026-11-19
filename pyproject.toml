@@ -97,6 +97,7 @@ package-data.magnet = [
   "examples/aiq_evals/*.yaml",
   "examples/llama_consistency/*.yaml",
   "examples/llama_consistency/*.md",
+  "examples/measurements/*.yaml",
   "examples/theory_links/*.md",
   "examples/theory_links/*/*.yaml",
   "examples/theory_links/*/*.lean",

@@ -23,3 +23,32 @@ process and identity tests pass. A downstream local Slurm/null-backend HTTP
 fixture also stopped CPU clients and released the lease after owner scancel;
 that is lifecycle evidence, not real-GPU acceptance. No workload-specific
 names, sampling policy or model selection enter this public implementation.
+
+## 2026-11-18 21:01:37 -0500
+
+Added a measurement-first result contract: recipes publish named scalar/table
+symbols from independent readout nodes, and `evaluation.json` records the
+available values and source computations. Claims are optional. Existing
+assertion records remain compatible, while new reports and the reader API
+present measurements without a Boolean headline.
+
+The important boundary is the result set. A model-level table, a task summary
+and per-observation scores cannot be treated as one row merely because they
+belong to one recipe. Sources remain independent; expansion selects one table
+and reductions are explicit. Nulls, empty tables and missing bindings remain
+distinguishable. File-backed tables avoid copying detailed observations into
+every snapshot, and exports retain portable locations and record identities.
+
+I am confident in keeping this outside execution identity. Labels and table
+selections do not become algorithm parameters, and further scientific work is
+still a normal configured node. The remaining concern is interpretation:
+units and descriptions cannot establish comparability, weighting, uncertainty
+or practical benefit. The API deliberately exposes those choices rather than
+trying to infer them. A dashboard migration remains separate consumer work.
+
+Validation covered legacy cards, optional claims, independent result grains,
+unknowns, source scope, cache reuse, named variants, detached reading and
+portable file tables. The broad suite passed 412 tests with 29 skipped; its
+remaining concurrent-engine test passed after isolating tmux from an unrelated
+server environment. Focused reader/collection checks and a packaged CPU-only
+example also passed. Built a wheel and verified the example/code assets ship.

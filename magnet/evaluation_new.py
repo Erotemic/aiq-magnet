@@ -1,5 +1,10 @@
 """
-The replacement evaluation API built around kwdagger experiment execution.
+Measurement-first evaluation cards built around kwdagger experiment execution.
+
+Recipes publish named symbols from independent ``readout_nodes``. MAGNET
+captures their available values in ``evaluation.json`` for detached reading,
+structured analysis and portable export. A Boolean claim is optional; the
+existing claim/verdict route remains compatibility output for older cards.
 
 ``magnet evaluate`` remains an alias of the legacy evaluator. A
 ``NewEvaluationRecipe`` can request a finite kwdagger campaign, but the
@@ -26,7 +31,7 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Tuple, TypedDict, Unpack, cast
+from typing import Any, Dict, List, Tuple, Unpack, cast
 
 import kwconf
 import kwutil
@@ -702,6 +707,7 @@ class NewEvaluationResultCard:
     evidence_discovered: int = 0
     #: Caller-supplied metadata written to the verdict unchanged.
     provenance: Provenance | None = None
+    measurements: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def cell_result_ids(self) -> List[str]:
@@ -724,6 +730,13 @@ class NewEvaluationResultCard:
             record['metrics'] = self.metrics
         if self.provenance:
             record['provenance'] = self.provenance
+        if self.measurements:
+            record['measurements'] = {
+                'file': 'evaluation.json',
+                'sources': {name: {'available': len(source['rows']),
+                                    'discovered': source.get('discovered', len(source['rows']))}
+                            for name, source in self.measurements['sources'].items()},
+            }
         return record
 
 
@@ -731,7 +744,7 @@ class NewEvaluationRecipe(EvaluationCard):
     """
     Input recipe for the replacement kwdagger-native evaluation API.
 
-    The recipe owns MAGNET metadata, the Python claim, declared symbols, and a
+    The recipe owns MAGNET metadata, an optional legacy claim, declared symbols, and a
     required ``kwdagger:`` execution block. KWDagger owns experiment execution
     and the aggregate result store. ``result_node`` selects which accumulated
     aggregate rows are candidates for the claim. The optional top-level
@@ -844,6 +857,16 @@ class NewEvaluationRecipe(EvaluationCard):
             self, verbose=verbose, provenance=provenance,
             record_path_file=record_path_file, readout_only=readout_only, **schedule_options,
         )
+
+    def summarize(self) -> None:
+        """Describe measured result sets rather than a Boolean assessment."""
+        logger.info(f'Title: {self.title}')
+        measured = self.result_card.measurements if self.result_card is not None else {}
+        logger.info(f'Measurement state: {measured.get("state", "not_recorded")}')
+        for node, source in measured.get('sources', {}).items():
+            logger.info(f'  {node}: {len(source["rows"])} result rows '
+                        f'(scope={measured.get("scope", "all")})')
+        logger.info(f'Evaluation record: {self.output_path / self._run_hash}')
 
 
 def coerce_provenance(raw: ProvenanceInput) -> Provenance | None:
@@ -1145,10 +1168,12 @@ def _check_new_evaluation_recipe(recipe: NewEvaluationRecipe) -> None:
             'restricted to letters, digits, underscore and hyphen. Put the '
             'readable version in `title`.'
         )
-    if not recipe.kwdagger.get('result_node'):
+    if not recipe.kwdagger.get('result_node') and (
+        recipe.original_card.get('claim') or not recipe.kwdagger.get('readout_nodes')
+    ):
         raise ValueError(
-            'evaluate_new requires `kwdagger.result_node`, naming the node '
-            'whose accumulated aggregate rows provide claim evidence.'
+            'a claim requires `kwdagger.result_node`; a measurement-only '
+            'recipe must declare `kwdagger.readout_nodes`'
         )
     evidence_scope = recipe.evidence_scope
     if evidence_scope not in {'all', 'requested'}:
@@ -1315,23 +1340,56 @@ def _evaluate_new_recipe(
     # KWDagger aggregate discovers the available result store independently of
     # this request. The recipe may then use the request as an optional filter;
     # the compiled schedule is never the result-discovery mechanism.
+    from magnet.measurements import is_declaration, materialize_readout, symbol_node
+    from magnet.records import atomic_json
+
     result_node = processor.result_node
-    if result_node is None:
-        raise ValueError('recipe must declare kwdagger.result_node')
-    discovered_evidence_rows = processor.load_available_result_rows()
-    evidence_rows = _select_evidence_rows(
-        discovered_evidence_rows,
-        requested_runs,
-        result_node=result_node,
-        scope=recipe.evidence_scope,
-    )
+    source_nodes = list(dict.fromkeys(
+        ([result_node] if result_node else []) + list(recipe.kwdagger.get('readout_nodes') or [])))
+    measurement_sets = {'schema_version': 1, 'format': 'magnet.evaluation-card',
+                        'record_id': recipe._run_hash,
+                        'recipe_file': 'card.yaml', 'execution_file': 'execution.json',
+                        'scope': recipe.evidence_scope, 'sources': {}}
+    if resolved_provenance:
+        measurement_sets['provenance'] = resolved_provenance
+    discovered_evidence_rows, evidence_rows = [], []
+    for node in source_nodes:
+        # Preserve the primary-node API for existing processor integrations.
+        discovered = (processor.load_available_result_rows() if node == result_node
+                      else processor.load_available_result_rows(node=node))
+        selected = _select_evidence_rows(discovered, requested_runs, result_node=node,
+                                         scope=recipe.evidence_scope)
+        source = materialize_readout(node, selected, recipe.symbols, bind=_fill_declared_symbols)
+        source['discovered'] = len(discovered)
+        source_names = {name for row in source['rows'] for name in row['symbols']}
+        source_metadata = {name: value for name, value in raw_symbol_metadata.items() if name in source_names}
+        if source['rows'] and source_metadata:
+            definitions = Metric.build_metrics_from_symbol_metadata(source_metadata)
+            if definitions:
+                source['metrics'] = _calculate_metrics(
+                    definitions, [row['symbols'] for row in source['rows']], source_metadata)
+        measurement_sets['sources'][node] = source
+        if node == result_node:
+            discovered_evidence_rows, evidence_rows = discovered, selected
+    measurement_sets['state'] = ('measured' if any(s['rows'] for s in measurement_sets['sources'].values())
+                                  else 'no_measurements')
+    atomic_json(recipe_output_path / 'evaluation.json', measurement_sets)
+
+    # A supplemental result set is not a scalar input to every claim row.
+    # Keep its independent measurements out of legacy symbol execution.
+    claim_symbols = {name: spec for name, spec in recipe.symbols.items()
+                     if not (is_declaration(spec) and symbol_node(name) in source_nodes
+                             and symbol_node(name) != result_node)}
 
     cell_results = []
-    for evidence in evidence_rows:
+    for evidence in evidence_rows if recipe.original_card.get('claim') else []:
         evidence_row = evidence['row']
         cell_symbols, measured = _fill_declared_symbols(
-            recipe.symbols, evidence_row
+            claim_symbols, evidence_row
         )
+        for spec in cell_symbols.values():
+            if is_declaration(spec):
+                spec['value'] = None
         cell_result = _evaluate_claim_cell(
             recipe.claim.claim,
             Symbols(cell_symbols),
@@ -1378,20 +1436,19 @@ def _evaluate_new_recipe(
 
     logger.info('================================')
     logger.info(f'Evidence Scope: {recipe.evidence_scope}')
-    logger.info(
-        f'Available Evidence Rows: {total} '
-        f'(discovered: {len(discovered_evidence_rows)})'
-    )
-    logger.info(f'  Verified:     {percentage(verified_count):.2f}')
-    logger.info(f'  Falsified:    {percentage(falsified_count):.2f}')
-    logger.info(f'  Inconclusive: {percentage(inconclusive_count):.2f}')
+    for node, source in measurement_sets['sources'].items():
+        logger.info(f'Measurement source {node}: {len(source["rows"])} result rows '
+                    f'(discovered: {source["discovered"]})')
+    logger.debug(f'Legacy claim rows: {total}; verified={percentage(verified_count):.2f}, '
+                 f'falsified={percentage(falsified_count):.2f}, inconclusive={percentage(inconclusive_count):.2f}')
     logger.info(f'Requested Work: {requested_work}')
     logger.info('================================')
     logger.info('\n')
 
-    aggregate_result = _reduce_results(
-        statuses, recipe.claim_aggregation_strategy
-    )
+    aggregate_result = (_reduce_results(statuses, recipe.claim_aggregation_strategy)
+                        if recipe.original_card.get('claim') else
+                        'MEASURED' if any(s['rows'] for s in measurement_sets['sources'].values())
+                        else 'NOT_EVALUATED')
     result_card = NewEvaluationResultCard(
         result=aggregate_result,
         claim_aggregation_strategy=recipe.claim_aggregation_strategy,
@@ -1401,6 +1458,7 @@ def _evaluate_new_recipe(
         evidence_scope=recipe.evidence_scope,
         evidence_discovered=len(discovered_evidence_rows),
         provenance=resolved_provenance,
+        measurements=measurement_sets,
     )
 
     with safer.open(

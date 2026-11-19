@@ -5,6 +5,11 @@ Serialized results are the persistent evaluation output. Console and worker
 logs explain execution; they are not required to recover measurements or
 display a recorded verdict. Existing dashboard bundles remain supported.
 
+New evaluations produce ``evaluation.json`` with declared measured symbols,
+independent result sets and their source identities. See :doc:`measurement_cards`
+for the measurement-first API, optional legacy claims and structured table
+selection. The verdict/claim layout below remains the compatibility format.
+
 Find the evaluation records under an output directory:
 
 .. code-block:: console
@@ -23,8 +28,9 @@ without loading its pipeline, executing its Python claim or scheduling work:
    magnet results show evaluation_runs/RECORD --format=json
    magnet results show evaluation_runs/RECORD --output=report.md
 
-The reader uses ``card.yaml``, the aggregate ``verdict.json`` and the claim
-records referenced under ``results/``. Native claim records preserve their
+The reader uses ``card.yaml`` and ``evaluation.json`` when available. Older
+bundles use the aggregate ``verdict.json`` and claim records referenced under
+``results/``. Native claim records preserve their
 complete qualified evidence row and consumed fields. Older records with only
 resolved ``symbols`` still render. An interrupted invocation without a verdict
 is displayed as ``NOT_RECORDED``; this is not a scientific verdict. Missing
@@ -32,8 +38,9 @@ referenced claim files are reported explicitly.
 
 ``evaluate_new`` now writes ``report.md`` and ``report.txt`` beside its result.
 These are derived presentations. They can be regenerated from serialized
-results without the original machine, logs or cache. Declared metrics and
-terminal-node measurements are shown, including nested records. Inherited
+results without the original machine, logs or cache. Published measurement
+sets and display metadata are shown. Older bundles show terminal-node
+measurements, including nested records. Inherited
 ancestor fields in a flattened gather row are not a lossless archive of all
 producer instances; use supporting artifacts for refitting or deeper audits.
 

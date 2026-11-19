@@ -1,0 +1,55 @@
+name: synthetic_correctness_measurements
+title: Correctness signals and their analysis cost
+description: |
+  A synthetic CPU demonstration of the measurement interface. Two noisy
+  correctness signals score the same binary answer labels. The card publishes
+  absolute ranking quality, probability error, observed CPU analysis time and
+  per-answer scores. These are simulated observations, not LLM performance or
+  serving-cost measurements. AUROC is unavailable for a single-class sample.
+version: '1'
+organizations: [Example]
+submitter: {name: Example, email: example@example.com}
+tags: [example, synthetic, measurements]
+links: []
+
+symbols:
+  metrics.measure.quality:
+    metadata:
+      display_name: Correctness prediction
+      display: true
+      columns:
+        method: {display_name: Signal}
+        samples: {display_name: Answers, unit: answers}
+        correct: {display_name: Correct answers, unit: answers}
+        auroc: {display_name: AUROC, unit: '1'}
+        brier_score: {display_name: Brier score, unit: '1'}
+  metrics.measure.timing:
+    metadata:
+      display_name: Observed CPU analysis time
+      display: true
+      columns:
+        method: {display_name: Signal}
+        analysis_wall_seconds: {display_name: Wall time, unit: s}
+  metrics.measure.answers_file:
+    metadata:
+      display_name: Per-answer correctness scores
+      display: false
+      format: jsonl
+      columns:
+        question_id: {display_name: Answer ID}
+        correct: {display_name: Correctness label}
+        scores.weak_signal: {display_name: Weak signal, unit: '1'}
+        scores.strong_signal: {display_name: Strong signal, unit: '1'}
+
+evidence: {scope: requested}
+kwdagger:
+  readout_nodes: [measure]
+  pipeline:
+    nodes:
+      measure:
+        executable: python -m magnet.examples.measurements.experiment
+        algo_params: {seed: 1, samples: 200}
+        out_paths: {out: measurements.json}
+        primary_out_key: out
+  matrix:
+    measure.seed: [1, 2, 3]

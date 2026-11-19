@@ -1,8 +1,9 @@
 """Read, present and export persisted evaluation results without executing cards.
 
-The existing ``card.yaml``, ``verdict.json`` and ``results/*/verdict.json``
-files remain authoritative. The optional export manifest adds integrity and
-portable artifact locations; it is not a second scientific result format.
+New cards publish ``evaluation.json`` beside their preserved recipe and
+execution record. Existing ``verdict.json`` and ``results/*/verdict.json``
+remain compatible. The export manifest supplies integrity and portable
+artifact locations without executing scientific code.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import yaml
 MANIFEST = 'bundle_manifest.json'
 SUPPORT_FILES = ('requested_runs.json', 'symbol_metadata.json', 'theory.json',
                  'provenance.json', 'execution.json', 'invocation.json',
-                 'variants.json', 'report_notes.md')
+                 'variants.json', 'report_notes.md', 'evaluation.json')
 
 
 def _mapping(path: Path, *, yaml_file: bool = False) -> dict:
@@ -59,6 +60,31 @@ class ResultBundle:
     execution: dict = field(default_factory=dict)
     manifest: dict = field(default_factory=dict)
     variants: dict = field(default_factory=dict)
+    measurement_sets: dict = field(default_factory=dict)
+
+    @property
+    def evaluation(self) -> dict:
+        """The measurement-first evaluation card, independent of legacy verdicts."""
+        return self.measurement_sets
+
+    def symbol_catalog(self) -> dict:
+        """Published definitions, units, table columns and observed availability."""
+        from magnet.measurements import symbol_catalog
+        return symbol_catalog(self)
+
+    def table(self, *, node=None, expand=None, where=None, columns=None):
+        """Return declared measurements as a pandas table, with source identities.
+
+        An explicit ``expand`` selects one record-array symbol. No source
+        joining, claim execution, pipeline imports or scheduling occurs.
+        """
+        import pandas as pd
+        from magnet.measurements import measurement_rows
+        rows = measurement_rows(self, node=node, expand=expand, where=where, columns=columns)
+        if not rows and columns is None and expand:
+            metadata = ((self.card.get('symbols') or {}).get(expand) or {}).get('metadata') or {}
+            columns = list(metadata.get('columns') or {}) or None
+        return pd.DataFrame(rows, columns=columns)
 
     def artifact_path(self, original: str) -> Path:
         """Prefer exported locations over original-machine provenance paths."""
@@ -104,7 +130,13 @@ def load_result_bundle(path: str | os.PathLike) -> ResultBundle:
     return ResultBundle(root, card, verdict, cells, missing,
                         _mapping(root / 'execution.json') if (root / 'execution.json').is_file() else {},
                         _mapping(root / MANIFEST) if (root / MANIFEST).is_file() else {},
-                        _mapping(root / 'variants.json') if (root / 'variants.json').is_file() else {})
+                        _mapping(root / 'variants.json') if (root / 'variants.json').is_file() else {},
+                        _mapping(root / 'evaluation.json') if (root / 'evaluation.json').is_file() else {})
+
+
+def load_evaluation_card(path: str | os.PathLike) -> ResultBundle:
+    """Read a saved evaluation card and its declared measurements without execution."""
+    return load_result_bundle(path)
 
 
 def discover_result_bundles(path: str | os.PathLike) -> list[dict]:
@@ -122,6 +154,8 @@ def discover_result_bundles(path: str | os.PathLike) -> list[dict]:
                         'available_claims': len(bundle.cells),
                         'missing_claims': bundle.missing_claims,
                         'execution_state': bundle.execution.get('state', 'unrecorded')})
+        if bundle.measurement_sets:
+            records[-1]['measurement_state'] = bundle.measurement_sets.get('state', 'measured')
     return sorted(records, key=lambda item: item['path'])
 
 
@@ -167,6 +201,14 @@ def _present_value(name: str, value: Any, level: int = 4) -> list[str]:
 
 
 def _variant_table(bundle: ResultBundle) -> list[str]:
+    if bundle.measurement_sets:
+        lines = ['| Variant | Measurement sources | Result rows |', '|---|---|---:|']
+        for label in bundle.variants:
+            selected = {node: [r for r in source['rows'] if r.get('variant') == label]
+                        for node, source in bundle.measurement_sets.get('sources', {}).items()}
+            lines.append(f'| {_cell(label)} | {_cell(", ".join(n for n, rows in selected.items() if rows))} | '
+                         f'{sum(map(len, selected.values()))} |')
+        return lines + ['']
     metadata = {name: spec['metadata'] for name, spec in bundle.card.get('symbols', {}).items()
                 if isinstance(spec, dict) and (spec.get('metadata') or {}).get('display')}
     headings = ['Variant', 'Result']
@@ -188,7 +230,8 @@ def _variant_table(bundle: ResultBundle) -> list[str]:
 
 def _render_variants(bundle: ResultBundle) -> str:
     lines = [f"# {bundle.card.get('title', bundle.card.get('name', 'Evaluation'))}", '',
-             f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**", '']
+             (f"Measurement state: **{bundle.measurement_sets.get('state', 'measured')}**"
+              if bundle.measurement_sets else f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**"), '']
     lines.extend(_variant_table(bundle))
     notes = bundle.root / 'report_notes.md'
     if notes.is_file():
@@ -196,12 +239,18 @@ def _render_variants(bundle: ResultBundle) -> str:
     return '\n'.join(lines) + '\n'
 
 
-def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bool = True) -> str:
+def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bool = True,
+                  legacy_claims: bool = False) -> str:
     """Present stored values. Never evaluate Python claims or load pipelines."""
     if format == 'json':
-        data = {'card': bundle.card, 'verdict': bundle.verdict,
-                'cells': bundle.cells, 'missing_claims': bundle.missing_claims,
-                'execution': bundle.execution}
+        data = {'card': bundle.card, 'execution': bundle.execution}
+        if bundle.measurement_sets:
+            data['evaluation'] = bundle.measurement_sets
+            if legacy_claims:
+                data['legacy'] = {'verdict': bundle.verdict, 'cells': bundle.cells,
+                                  'missing_claims': bundle.missing_claims}
+        else:
+            data.update(verdict=bundle.verdict, cells=bundle.cells, missing_claims=bundle.missing_claims)
         if bundle.variants:
             data['variants'] = bundle.variants
         return json.dumps(data, indent=2, ensure_ascii=False) + '\n'
@@ -214,26 +263,62 @@ def render_result(bundle: ResultBundle, *, format: str = 'markdown', details: bo
             text = re.sub(r'^#{1,6} ', '', text, flags=re.MULTILINE).replace('**', '')
         return text
     lines = [f"# {bundle.card.get('title', bundle.card.get('name', 'Evaluation'))}", '',
-             f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**", '',
+             (f"Measurement state: **{bundle.measurement_sets.get('state', 'measured')}**"
+              if bundle.measurement_sets else f"Result: **{bundle.verdict.get('result', 'NOT_RECORDED')}**"), '',
              str(bundle.card.get('description') or ''), '']
     if bundle.variants:
         lines += ['## Variants', '']
         lines.extend(_variant_table(bundle))
-    if not bundle.verdict:
+    if not bundle.verdict and not bundle.measurement_sets:
         lines += ['No aggregate verdict was recorded. Available execution metadata follows; '
                   'this is not a claim verdict.', '']
     if bundle.missing_claims:
         lines += ['Missing referenced claim records: ' + ', '.join(bundle.missing_claims), '']
     for key in ('evidence', 'requested_work', 'metrics', 'provenance'):
+        if key == 'evidence' and bundle.measurement_sets:
+            continue  # This legacy count concerns assertion rows, not measured result sets.
         if key in bundle.verdict:
             lines.extend(_present_value(key, bundle.verdict[key], 2))
+    if bundle.measurement_sets:
+        lines.extend(['## Published measurements', ''])
+        definitions = bundle.card.get('symbols') or {}
+        for node, source in bundle.measurement_sets.get('sources', {}).items():
+            lines.extend([f'### {node}', '',
+                          f'Available result rows: {len(source["rows"])}. '
+                          f'Evidence scope: {bundle.measurement_sets.get("scope", "all")}.', ''])
+            if source.get('metrics'):
+                lines.extend(_present_value('Declared reductions', source['metrics'], 4))
+            for item in source['rows']:
+                lines.extend([f'#### {item["cell"]}', ''])
+                for name, value in item.get('symbols', {}).items():
+                    metadata = (definitions.get(name) or {}).get('metadata') or {}
+                    if metadata.get('display') is False:
+                        continue
+                    label = metadata.get('display_name', name)
+                    if metadata.get('unit'):
+                        label += f' ({metadata["unit"]})'
+                    if metadata.get('description'):
+                        lines.extend([metadata['description'], ''])
+                    column_metadata = metadata.get('columns') or {}
+                    if isinstance(value, list) and column_metadata:
+                        labels = {column: details.get('display_name', column)
+                                  + (f' ({details["unit"]})' if details.get('unit') else '')
+                                  for column, details in column_metadata.items()}
+                        value = [{labels.get(k, k): v for k, v in row.items()} if isinstance(row, dict) else row
+                                 for row in value]
+                    lines.extend(_present_value(label, value, 5))
+                if item.get('missing_symbols'):
+                    lines.extend(_present_value('Unavailable symbols', item['missing_symbols'], 5))
     claim = bundle.card.get('claim') or {}
     python = claim.get('python', '') if isinstance(claim, dict) else str(claim)
     fence = '```'
     while fence in python:
         fence += '`'
-    lines += ['## Claim', '', fence + 'python', python, fence, '', '## Claim results', '']
-    for key, cell in bundle.cells.items():
+    show_claims = not bundle.measurement_sets or legacy_claims
+    if claim and show_claims:
+        label = 'Legacy claim' if bundle.measurement_sets else 'Claim'
+        lines += [f'## {label}', '', fence + 'python', python, fence, '', f'## {label} results', '']
+    for key, cell in bundle.cells.items() if show_claims else []:
         lines += [f'### {key}', '']
         labels = [label for label, variant in bundle.variants.items() if key in variant['claims']]
         if labels:
@@ -336,6 +421,10 @@ def export_result_bundle(source: str | os.PathLike, destination: str | os.PathLi
                 original = cell.get('artifact')
                 if original:
                     wanted[original] = ('terminal', str(cell.get('cell') or Path(original).parent.name))
+            from magnet.measurements import measurement_artifacts
+            for item in measurement_artifacts(bundle):
+                if not nodes or item['node'] in nodes:
+                    wanted[item['source']] = (item['node'], item['process_id'])
         if supporting == 'requested' and (bundle.root / 'requested_runs.json').is_file():
             for item in requests:
                 if nodes and item['node'] not in nodes:
@@ -384,6 +473,8 @@ def verify_result_bundle(path: str | os.PathLike) -> dict:
     """Check included file bytes and core references, without original paths."""
     bundle = load_result_bundle(path)
     errors = [f'missing claim record: {key}' for key in bundle.missing_claims]
+    if bundle.verdict.get('measurements') and not (bundle.root / 'evaluation.json').is_file():
+        errors.append('missing declared evaluation card: evaluation.json')
     files = bundle.manifest.get('files')
     if files is None:
         return {'valid': not errors, 'integrity_manifest': False, 'checked_files': 0,
@@ -400,6 +491,7 @@ def verify_result_bundle(path: str | os.PathLike) -> dict:
         if item['path'] not in files:
             errors.append(f'artifact not covered by integrity manifest: {item["path"]}')
     for key in ('card.yaml', *(('verdict.json',) if bundle.verdict else ()),
+                *(('evaluation.json',) if bundle.measurement_sets else ()),
                 *(f'results/{key}/verdict.json' for key in bundle.cells)):
         if key not in files:
             errors.append(f'core file not covered by integrity manifest: {key}')

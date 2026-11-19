@@ -30,7 +30,7 @@ class KWDaggerSchema(BaseModel):
     """
     A card's kwdagger backend.
 
-    Everything but ``result_node`` is passed as the ``params`` payload to
+    Everything but ``result_node`` and ``readout_nodes`` is passed as the ``params`` payload to
     ``kwdagger schedule``. Unknown keys are allowed so KWDagger can own its
     matrix/configuration language while MAGNET validates only what it reads.
     """
@@ -38,6 +38,8 @@ class KWDaggerSchema(BaseModel):
 
     #: The node whose accumulated aggregate rows provide claim evidence.
     result_node: str | None = None
+    #: Additional independent result sets published as measured symbols.
+    readout_nodes: list[str] = Field(default_factory=list)
 
     #: A Pipeline callable, a path to a declarative pipeline, or the pipeline
     #: inline as a mapping.
@@ -62,6 +64,10 @@ class SymbolMetadataSchema(BaseModel):
     display: bool | None = None
     display_name: str | None = None
     define_metric: MetricSymbolSchema | None = None
+    description: str | None = None
+    unit: str | None = None
+    columns: dict[str, 'SymbolMetadataSchema'] | None = None
+    format: Literal['jsonl', 'csv', 'json'] | None = None
 
 class SymbolSchema(BaseModel):
     type: str | None = None
@@ -277,9 +283,15 @@ class EvaluationCardSchema(BaseModel):
 
 
 class NewEvaluationKWDaggerSchema(KWDaggerSchema):
-    """KWDagger block required by the replacement evaluation API."""
+    """Backend with measured readouts and an optional legacy claim source."""
 
-    result_node: str
+    result_node: str | None = None
+
+    @model_validator(mode='after')
+    def has_readout(self) -> 'NewEvaluationKWDaggerSchema':
+        if not self.result_node and not self.readout_nodes:
+            raise ValueError('declare kwdagger.result_node or kwdagger.readout_nodes')
+        return self
 
 
 #: A recipe `name` is used as an identifier -- a tmux session name, a path
@@ -316,12 +328,15 @@ class NewEvaluationRecipeSchema(EvaluationCardSchema):
     """
 
     name: str | None = Field(default=None, pattern=RECIPE_NAME_PATTERN)
+    claim: ClaimSchema | None = None
     kwdagger: NewEvaluationKWDaggerSchema
     pipeline: None = None
     evidence: EvidenceSchema = Field(default_factory=EvidenceSchema)
 
     @model_validator(mode='after')
     def no_legacy_symbol_sweeps(self) -> 'NewEvaluationRecipeSchema':
+        if self.claim is not None and not self.kwdagger.result_node:
+            raise ValueError('a claim requires kwdagger.result_node')
         sweep_symbols = sorted(
             name
             for name, symbol in (self.symbols or {}).items()

@@ -243,9 +243,11 @@ class KWDaggerProcessor:
         # ``result_node`` is a MAGNET-level declaration, not part of the
         # ``kwdagger schedule --params`` payload.
         self.params = {
-            k: v for k, v in kwdagger_config.items() if k != 'result_node'
+            k: v for k, v in kwdagger_config.items() if k not in {'result_node', 'readout_nodes'}
         }
         self.result_node: str | None = kwdagger_config.get('result_node')
+        self.readout_nodes = list(dict.fromkeys(
+            ([self.result_node] if self.result_node else []) + list(kwdagger_config.get('readout_nodes') or [])))
         self.root_dpath = ub.Path(root_dpath)
         self.results = []
         self.symbols = []
@@ -285,6 +287,9 @@ class KWDaggerProcessor:
         # this built a throwaway pipeline to inspect and let build_schedule
         # construct its own.
         pipeline = coerce_pipeline(self.params['pipeline'])
+        unknown = set(self.readout_nodes) - set(pipeline.node_dict)
+        if unknown:
+            raise ValueError(f'unknown readout nodes: {sorted(unknown)}; available: {sorted(pipeline.node_dict)}')
 
         container_settings = (
             container_settings or containers.ContainerSettings()
@@ -316,19 +321,20 @@ class KWDaggerProcessor:
         with preflight_scope(enabled=not dry_run):
             self.request_dag, self.queue = build_schedule(kwd_config)
 
-    def _coerce_aggregate_pipeline(self) -> Any:
+    def _coerce_aggregate_pipeline(self, node_name: str | None = None) -> Any:
         """Configure the logical pipeline used by kwdagger aggregate loading."""
         from kwdagger.pipeline import coerce_pipeline
 
-        if not self.result_node:
-            raise ValueError('recipe must declare kwdagger.result_node')
+        node_name = node_name or self.result_node
+        if not node_name:
+            raise ValueError('declare result_node or select a readout node to read')
 
         pipeline = coerce_pipeline(self.params['pipeline'])
         pipeline.configure(config=None, root_dpath=self.root_dpath)
-        if self.result_node not in pipeline.node_dict:
+        if node_name not in pipeline.node_dict:
             available = sorted(pipeline.node_dict)
             raise ValueError(
-                f'result_node {self.result_node!r} is not a node in the '
+                f'result node {node_name!r} is not a node in the '
                 f'pipeline; available: {available}'
             )
         return pipeline
@@ -338,6 +344,7 @@ class KWDaggerProcessor:
         *,
         io_workers: Any = 'avail',
         cache_resolved_results: bool = True,
+        node: str | None = None,
     ) -> List[Dict[str, Any]]:
         """Load all currently available evidence for ``result_node``.
 
@@ -357,7 +364,9 @@ class KWDaggerProcessor:
         import pandas as pd
         from kwdagger.aggregate_loader import build_tables
 
-        pipeline = self._coerce_aggregate_pipeline()
+        node_name = node or self.result_node
+        pipeline = (self._coerce_aggregate_pipeline() if node is None
+                    else self._coerce_aggregate_pipeline(node_name))
         if any(
             getattr(node, 'cache_result_rows', True) is False
             for node in pipeline.node_dict.values()
@@ -370,10 +379,10 @@ class KWDaggerProcessor:
             self.root_dpath,
             pipeline,
             io_workers,
-            [self.result_node],
+            [node_name],
             cache_resolved_results=cache_resolved_results,
         )
-        parts = tables_by_node.get(self.result_node)
+        parts = tables_by_node.get(node_name)
         if not parts:
             return []
 
@@ -395,7 +404,7 @@ class KWDaggerProcessor:
             artifact = row.get('fpath')
             if artifact is None:
                 continue
-            artifact = os.fspath(artifact)
+            artifact = os.fspath(ub.Path(artifact).absolute())
             row['fpath'] = artifact
             evidence.append({
                 'key': ub.Path(artifact).parent.name,
@@ -513,6 +522,8 @@ def _is_missing_aggregate_value(value: Any) -> bool:
     """Return True for dataframe missing-value sentinels, but not real None."""
     if value is None:
         return False
+    if isinstance(value, (list, tuple, dict)):
+        return False
     try:
         import pandas as pd
 
@@ -593,11 +604,11 @@ def _primary_result_path(node: Any) -> ub.Path | None:
         return None
     final_out_paths = getattr(node, 'final_out_paths', None)
     if final_out_paths is not None and primary_out_key in final_out_paths:
-        return ub.Path(final_out_paths[primary_out_key])
+        return ub.Path(final_out_paths[primary_out_key]).absolute()
     out_paths = getattr(node, 'out_paths', None) or {}
     if primary_out_key not in out_paths:
         return None
-    return ub.Path(node.final_node_dpath) / out_paths[primary_out_key]
+    return (ub.Path(node.final_node_dpath) / out_paths[primary_out_key]).absolute()
 
 def _resolve_pipeline_path(
     kwdagger_spec: Dict[str, Any], card_dpath: ub.Path

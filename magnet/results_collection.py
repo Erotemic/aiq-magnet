@@ -35,6 +35,7 @@ def combine_result_bundles(
     if not sources:
         raise ValueError('at least one named source is required')
     bundles = {label: load_result_bundle(path) for label, path in sources.items()}
+    measurement_first = any(bundle.measurement_sets for bundle in bundles.values())
     first = next(iter(bundles.values()))
     common_fields = ('name', 'description', 'claim', 'symbols', 'claim_aggregation_strategy')
     for label, bundle in bundles.items():
@@ -64,6 +65,8 @@ def combine_result_bundles(
         if metadata:
             (staging / metadata_path.name).write_text(json.dumps(metadata, indent=2) + '\n')
         variants, cells, artifacts = {}, {}, {}
+        measurements = {'schema_version': 1, 'format': 'magnet.evaluation-card',
+                        'scope': 'variants', 'sources': {}}
         for label, bundle in bundles.items():
             source_variants = bundle.variants or {label: {
                 'claims': list(bundle.cells), 'kwdagger': bundle.card.get('kwdagger'),
@@ -82,6 +85,16 @@ def combine_result_bundles(
                 target = staging / 'results' / key / 'verdict.json'
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(bundle.root / 'results' / key / 'verdict.json', target)
+            from magnet.measurements import published_sources
+            for node, source in (published_sources(bundle).items() if measurement_first else []):
+                combined = measurements['sources'].setdefault(node, {'rows': [], 'discovered': 0})
+                combined['discovered'] += source.get('discovered', len(source['rows']))
+                combined['rows'].extend({**item, 'variant': item.get('variant', label),
+                                          'scope': item.get('scope', bundle.measurement_sets.get('scope')),
+                                          'source_record_id': item.get('source_record_id', bundle.measurement_sets.get(
+                                              'record_id', bundle.execution.get('record_id'))),
+                                          'source_record': item.get('source_record', str(bundle.root))}
+                                         for item in source['rows'])
             references = {item['source']: item for item in bundle.manifest.get('artifacts', [])}
             for cell in bundle.cells.values():
                 original = cell.get('artifact')
@@ -90,6 +103,9 @@ def combine_result_bundles(
                         'source': original, 'node': (bundle.card.get('kwdagger') or {}).get('result_node'),
                         'process_id': cell.get('cell') or Path(original).parent.name,
                     }
+            from magnet.measurements import measurement_artifacts
+            for item in measurement_artifacts(bundle):
+                references.setdefault(item['source'], item)
             for item in references.values():
                 source = bundle.artifact_path(item['source'])
                 if not source.is_file():
@@ -115,6 +131,16 @@ def combine_result_bundles(
             'claim_aggregation_strategy': strategy, 'claims': list(cells),
             'metrics': metrics, 'evidence': {'scope': 'all', 'available': len(cells)},
         }
+        if measurements['sources']:
+            verdict['measurements'] = {'file': 'evaluation.json', 'sources': {
+                node: {'available': len(source['rows']), 'discovered': source['discovered']}
+                for node, source in measurements['sources'].items()}}
+            measurements['state'] = ('measured' if any(s['rows'] for s in measurements['sources'].values())
+                                     else 'no_measurements')
+            (staging / 'evaluation.json').write_text(json.dumps(measurements, indent=2) + '\n')
+            if not first.card.get('claim'):
+                verdict['result'] = ('MEASURED' if any(s['rows'] for s in measurements['sources'].values())
+                                     else 'NOT_EVALUATED')
         documents = {'verdict.json': verdict, 'variants.json': variants}
         for name, data in documents.items():
             (staging / name).write_text(json.dumps(data, indent=2) + '\n')

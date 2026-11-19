@@ -191,7 +191,7 @@ class EvaluationCard:
         self.title = cfg.get('title', '')
         self.description = cfg.get('description', '')
 
-        self.claim = Claim(cfg.get('claim'))
+        self.claim = Claim(cfg.get('claim') or {})
         self.claim_aggregation_strategy = cfg.get(
             'claim_aggregation_strategy', DEFAULT_CLAIM_AGGREGATION_STRATEGY
         )
@@ -846,14 +846,12 @@ class Symbols:
         return list(sorter.static_order())
 
     def simple_view(self) -> Dict[str, Any]:
-        # TODO: replace with free variables and data attestation
-        ALLOWABLE_TYPES = [int, float, str, dict]
+        # Structured measurements, explicit unknowns and empty tables are values.
+        # Opaque Python objects remain outside the serialized symbol contract.
         return {
             k: v
             for k, v in self().items()
-            # fixme: probably want isinstance and issubclass
-            if type(v) in ALLOWABLE_TYPES
-            or (type(v) == list and type(v[0]) == int)   # NOQA
+            if v is None or isinstance(v, (bool, int, float, str, dict, list))
         }
 
     def __call__(self) -> Dict[str, Any]:
@@ -901,7 +899,7 @@ class Metric:
                     'aggregation_strategy', DEFAULT_METRIC_AGGREGATION_STRATEGY
                 )
                 strategy_name = agg_strategy.get('type')
-                parameters = agg_strategy.get('parameters') or {}  # NOQA: unused
+                parameters = agg_strategy.get('parameters') or {}  # noqa: F841
                 objective = MetricObjective(
                     metric_metadata.get('objective', MetricObjective.MAXIMIZE)
                 )

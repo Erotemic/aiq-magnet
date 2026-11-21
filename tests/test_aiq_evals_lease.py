@@ -67,6 +67,7 @@ def lease_env(tmp_path, monkeypatch):
     monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path / 'xdg-config'))
     monkeypatch.setenv('OPENAI_API_KEY', 'example-lease-key')
     monkeypatch.delenv('INFER_STACK_LEASE_ID', raising=False)
+    monkeypatch.delenv('INFER_STACK_ENDPOINT_DESCRIPTOR', raising=False)
     with chat_server() as port:
         shim = tmp_path / 'shim-bin' / 'infer-stack'
         shim.parent.mkdir()
@@ -248,6 +249,67 @@ def test_inspect_primary_and_grader_share_one_multi_endpoint_lease(tmp_path, lea
     ((_, endpoints),) = _leases(lease_env)
     assert endpoints == ['gpt-4o', 'gpt-4o-mini']
     _no_secret(out)
+    with sqlite3.connect(lease_env) as db:
+        assert db.execute('select state from leases').fetchall() == [('released',)]
+    # Exercise the scheduling provenance CLI again; a stored measurement needs
+    # no second lease or native invocation.
+    _, resumed = evaluate(fpath, out, lease_settings=_lease_settings())
+    assert resumed.result == 'VERIFIED'
+    assert len(_leases(lease_env)) == 1
+    assert (tmp_path / 'lease-entries').read_text().splitlines() == ['entered']
+
+
+@needs_infer_stack
+@needs_repo
+@needs(INSPECT_OPENAI_PYTHON is not None, 'needs $AIQ_EVALS_INSPECT_OPENAI_PYTHON')
+@pytest.mark.parametrize('change_at', ['catalog', 'lease'])
+def test_inspect_serving_drift_stays_unscored(tmp_path, lease_env, monkeypatch, change_at):
+    """A real CLI/lease handoff must reject changed launch facts before inference."""
+    import yaml
+
+    from magnet.backends.aiq_evals.pipeline import (
+        EvaluationNode,
+        preflight_scope,
+    )
+
+    repo_on_worker_path(monkeypatch)
+    algo = {
+        'engine': 'inspect_ai', 'task': 'python:tests.native.inspect_fixture:generation',
+        'data_revision': 'fixture-v1',
+        'models': [{'role': 'primary', 'model': 'gpt-4o-mini', 'provider': 'openai',
+                    'revision': 'example-endpoint-v1'}],
+        'engine_options': {'registration_modules': ['tests.native.inspect_fixture']},
+    }
+    node = EvaluationNode(algo_params=algo, perf_params={
+        'worker_python': INSPECT_OPENAI_PYTHON, 'endpoint': 'gpt-4o-mini',
+        'store_dpath': str(tmp_path / 'store')})
+    node.apply_lease_settings(_lease_settings())
+    node.configure({'out_dpath': str(tmp_path / 'node'),
+                    'evaluation_fname': str(tmp_path / 'node/evaluation.json')})
+    with preflight_scope(True):
+        command = node.command
+    catalog = Path(os.environ['INFER_STACK_CATALOG'])
+    changed = yaml.safe_load(catalog.read_text())
+    changed['models']['example-model']['quantization'] = 'awq'
+    if change_at == 'catalog':
+        catalog.write_text(yaml.safe_dump(changed))
+    else:
+        new_catalog = tmp_path / 'changed.yaml'
+        new_catalog.write_text(yaml.safe_dump(changed))
+        shim = Path(shutil.which('infer-stack'))
+        shim.write_text(shim.read_text().replace('  shift\n',
+            '  shift\n' + f'  cp {shlex.quote(str(new_catalog))} {shlex.quote(str(catalog))}\n'))
+    process = subprocess.run(['bash', '-c', command], text=True, capture_output=True)
+    assert process.returncode == 3, process.stdout + process.stderr
+    assert not (tmp_path / 'node/evaluation.json').exists()
+    summary = json.loads((tmp_path / 'node/attempt_summary.json').read_text())
+    assert 'serving provenance' in summary['error']
+    assert not list((tmp_path / 'store').rglob('RUN_COMPLETE'))
+    if change_at == 'lease':
+        with sqlite3.connect(lease_env) as db:
+            assert db.execute('select state from leases').fetchall() == [('released',)]
+    else:
+        assert not (tmp_path / 'lease-entries').exists()
 
 
 CONTAINER_VENV = os.environ.get('MAGNET_TEST_CONTAINER_VENV')

@@ -1,4 +1,4 @@
-# Coding benchmark smoke recipes
+# Coding benchmark recipes
 
 Harbor and SWE-bench use `EvaluationNode` and the existing kwdagger scheduler.
 Prepare a concrete Verified recipe with the evaluator's five frozen instances:
@@ -25,6 +25,40 @@ identified agent runtime; installed agents currently remain non-reusable.
 The generated claim checks evidence eligibility. Replace it with a scientific
 claim appropriate to the experiment. These recipes run tiny smoke sets and do
 not launch Verified's 500 tasks, HARD-51, or Pro's 642 tasks.
+
+For a caller-selected Verified set, the same helper supports an explicit
+selection and image-pin map:
+
+```bash
+python -m magnet.examples.aiq_evals.swebench --kind verified \
+  --endpoint coding --worker_python /path/to/verified-worker/bin/python \
+  --selection selection.json --image_pins images.json --shard_size 1 \
+  --agent_protocol minimal-edit/v1 --message_limit 200 --output verified.yaml
+magnet evaluate_new verified.yaml --output_path results \
+  --backend tmux --tmux_workers 4 --per_node_leasing=True
+```
+
+`selection.json` is a list or an object containing `instance_ids`; `images.json`
+maps selected instances to digest-pinned task images. This path uses
+`swe_bench_verified.profile_requests` and the existing EvaluationNode matrix,
+not a separate controller. The default smoke path above is unchanged.
+`--generation` accepts JSON overrides, e.g. output budget or reasoning effort.
+
+Each shard has its own native result, trajectory and cache identity. Rerunning
+the same configuration reuses completed shards and retries unfinished work
+through the ordinary scheduler. Model failures scored zero remain zero;
+operational failures supply no score. The generated card publishes measurements
+without a scientific Boolean claim. Partial readouts remain available.
+Native grading runs once; no oracle/NOP or fresh regrade is added to this path.
+
+Use `magnet results table RECORD --node evaluate` for per-shard measurements.
+An explicit `--aggregate '{"metrics.evaluate.score":"mean"}'` reports the
+mean and observed/missing counts. A full benchmark score requires the full
+selected coverage; a partial mean is not the full benchmark score.
+`--lease_ttl` and `--lease_timeout` configure command-scoped leases in the
+generated node; completion/cancellation still releases them. An optional
+`--timeout_seconds` bounds one evaluation worker without changing the benchmark
+score or retrying it internally.
 
 Leased nodes query configured scientific serving provenance before scheduling,
 bind its digest as the model cache token, and verify the lease's public JSON

@@ -1,4 +1,4 @@
-"""Prepare tiny coding benchmark recipes for the existing EvaluationNode."""
+"""Prepare coding benchmark recipes for the existing EvaluationNode."""
 from __future__ import annotations
 
 import json
@@ -20,6 +20,37 @@ def recipe(request: dict, *, name: str, endpoint: str, worker_python: str, selec
                             'verify_serving_provenance': True}}}}}}
 
 
+def sharded_recipe(requests, *, name: str, endpoint: str, worker_python: str,
+                   select: dict) -> dict:
+    """One measurement node over a declared task-options matrix, using ordinary kwdagger reuse.
+
+    Every shard retains its native result and trajectory. Measurement-only
+    readout preserves partial coverage without turning a failed shard into zero.
+    Requests may differ only in task options, not model or generation settings.
+    """
+    requests = [r.to_dict() if hasattr(r, 'to_dict') else r for r in requests]
+    if not requests:
+        raise ValueError('provide at least one evaluation request')
+    common = {k: v for k, v in requests[0].items() if k != 'task_options'}
+    if any({k: v for k, v in r.items() if k != 'task_options'} != common for r in requests):
+        raise ValueError('sharded requests must share model, generation and engine settings')
+    result = recipe(requests[0], name=name, endpoint=endpoint,
+                    worker_python=worker_python, select=select)
+    result['description'] = 'Independently reusable coding benchmark measurements'
+    result.pop('claim')
+    result['kwdagger'].pop('result_node')
+    result['kwdagger']['readout_nodes'] = ['evaluate']
+    result['kwdagger']['matrix'] = {'evaluate.task_options': [r['task_options'] for r in requests]}
+    result['symbols'] = {f'metrics.evaluate.{key}': {'metadata': metadata} for key, metadata in {
+        'score': {'display_name': 'Benchmark score', 'unit': '1'},
+        'eligible': {'display_name': 'Complete usable result'},
+        'ineligible_reasons': {'display_name': 'Incomplete-result reason'},
+        'run_path': {'display_name': 'Native evaluation bundle', 'display': False},
+        'measurement_identity': {'display_name': 'Measurement identity', 'display': False},
+    }.items()}
+    return result
+
+
 def main(argv=True):
     import kwconf
     import yaml
@@ -33,6 +64,14 @@ def main(argv=True):
         evals_root = kwconf.Value(None, help='evaluator source checkout')
         pro_root = kwconf.Value(None, help='pinned Pro V2 checkout')
         image_pins = kwconf.Value(None, help='Pro {instance: sha256:image-id} JSON')
+        selection = kwconf.Value(None, help='Verified JSON list or {instance_ids: [...]}')
+        shard_size = kwconf.Value(1, help='Verified instances per independently reusable request')
+        agent_protocol = kwconf.Value('upstream', help='Verified agent protocol')
+        message_limit = kwconf.Value(30, help='Verified per-sample message limit')
+        generation = kwconf.Value(None, help='Verified generation settings as JSON or a mapping')
+        lease_ttl = kwconf.Value('8h', help='Command-scoped lease TTL; completion releases it')
+        lease_timeout = kwconf.Value(1800, help='Endpoint readiness timeout in seconds')
+        timeout_seconds = kwconf.Value(None, help='Optional evaluation worker wall-time limit')
         task_path = kwconf.Value(None, help='Harbor task directory')
         agent = kwconf.Value('oracle', help='Harbor built-in or python:module:Class')
 
@@ -44,7 +83,20 @@ def main(argv=True):
     binding = ModelBinding(role='primary', model=args.served_model or args.endpoint,
                            provider='openai', provider_options=(
                                {'responses_api': False} if args.kind == 'verified' else {}))
-    if args.kind == 'verified':
+    requests = None
+    if args.kind == 'verified' and args.selection:
+        from magnet_evals.benchmarks.swe_bench_verified import profile_requests
+
+        if not args.image_pins:
+            raise ValueError('Verified selection needs image_pins')
+        selection = json.loads(Path(args.selection).read_text())
+        ids = selection['instance_ids'] if isinstance(selection, dict) else selection
+        generation = json.loads(args.generation) if isinstance(args.generation, str) else args.generation
+        requests = profile_requests(ids, json.loads(Path(args.image_pins).read_text()), binding,
+            shard_size=args.shard_size, agent_protocol=args.agent_protocol,
+            message_limit=args.message_limit, generation=generation)
+        select = {'scorer': 'swe_bench_scorer', 'metric': 'accuracy'}
+    elif args.kind == 'verified':
         request = EvaluationRequest.from_dict(json.loads((root / 'examples/swebench_verified_request.json').read_text()))
         from dataclasses import replace
 
@@ -67,8 +119,15 @@ def main(argv=True):
         select = {'metric': 'mean', 'score': 'reward'}
     target = Path(args.output)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(yaml.safe_dump(recipe(request.to_dict(), name='swebench_' + args.kind + '_smoke',
-        endpoint=args.endpoint, worker_python=args.worker_python, select=select), sort_keys=False))
+    prepared = (sharded_recipe(requests, name='swebench_verified', endpoint=args.endpoint,
+                    worker_python=args.worker_python, select=select) if requests else
+                recipe(request.to_dict(), name='swebench_' + args.kind + '_smoke',
+                    endpoint=args.endpoint, worker_python=args.worker_python, select=select))
+    node = prepared['kwdagger']['pipeline']['nodes']['evaluate']
+    node.update(lease_ttl=args.lease_ttl, lease_timeout=args.lease_timeout)
+    if args.timeout_seconds is not None:
+        node['perf_params']['timeout_seconds'] = args.timeout_seconds
+    target.write_text(yaml.safe_dump(prepared, sort_keys=False))
     print(target)
     return 0
 

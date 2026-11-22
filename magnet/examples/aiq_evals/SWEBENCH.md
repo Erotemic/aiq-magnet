@@ -43,6 +43,12 @@ maps selected instances to digest-pinned task images. This path uses
 `swe_bench_verified.profile_requests` and the existing EvaluationNode matrix,
 not a separate controller. The default smoke path above is unchanged.
 `--generation` accepts JSON overrides, e.g. output budget or reasoning effort.
+For an infer-stack LiteLLM gateway, `--provider litellm-proxy` selects Inspect's
+native proxy client, including model metadata lookup and normal termination
+at context limits. The default remains `openai`. Command-scoped leasing passes
+the same gateway key under the client's required `LITELLM_PROXY_API_KEY` name;
+no second credential is configured. The proxy client uses chat completions
+without streaming.
 
 Each shard has its own native result, trajectory and cache identity. Rerunning
 the same configuration reuses completed shards and retries unfinished work

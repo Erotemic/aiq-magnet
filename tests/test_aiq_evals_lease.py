@@ -317,6 +317,49 @@ CONTAINER_VENV = os.environ.get('MAGNET_TEST_CONTAINER_VENV')
 
 @needs_infer_stack
 @needs_repo
+@needs(INSPECT_OPENAI_PYTHON is not None, 'needs $AIQ_EVALS_INSPECT_OPENAI_PYTHON')
+def test_native_proxy_context_stop_scores_zero_and_releases_lease(tmp_path, lease_env, monkeypatch):
+    import re
+    import sys
+
+    from aiq_evals_support import repo
+
+    repo_on_worker_path(monkeypatch)
+    monkeypatch.setenv('LITELLM_PROXY_API_KEY', 'wrong-inherited-key')
+    sys.path.insert(0, str(repo()))
+    from tests.native.litellm_proxy_server import proxy_server
+
+    with proxy_server(model='gpt-4o-mini', key='example-lease-key') as (url, calls):
+        shim = Path(shutil.which('infer-stack'))
+        shim.write_text(re.sub(r'http://127\.0\.0\.1:\d+/v1', url, shim.read_text()))
+        algo = {
+            'engine': 'inspect_ai', 'task': 'python:tests.native.inspect_fixture:proxy_context_task',
+            'data_revision': 'fixture-v1',
+            'models': [{'role': 'primary', 'model': 'gpt-4o-mini', 'provider': 'litellm-proxy',
+                        'revision': 'fixture-v1',
+                        'provider_options': {'responses_api': False, 'stream': False}}],
+            'generation': {'reasoning_effort': 'high', 'max_tokens': 512},
+            'engine_options': {'required_secrets': ['OPENAI_API_KEY']},
+            'select': {'scorer': 'match', 'metric': 'accuracy'},
+        }
+        node = evaluation_node(algo, worker=INSPECT_OPENAI_PYTHON, endpoint='gpt-4o-mini')
+        path = write_recipe(tmp_path, {'evaluate': node}, claim='assert metrics.evaluate.score == 0')
+        out = tmp_path / 'out'
+        _, card = evaluate(path, out, lease_settings=_lease_settings())
+    assert card.result == 'VERIFIED', [c.evidence_row for c in card.cell_results]
+    (record,) = [json.loads(p.read_text()) for p in evaluations(out)]
+    run = magnet_evals.load_run(record['run_path'])
+    assert run.result.status == 'succeeded'
+    assert run.attempt['execution_context']['env_keys'] == ['LITELLM_PROXY_API_KEY', 'OPENAI_API_KEY']
+    assert any(c.get('path', '').endswith('/model/info') for c in calls)
+    assert len([c for c in calls if c['method'] == 'POST']) == 2
+    with sqlite3.connect(lease_env) as db:
+        assert db.execute('select state from leases').fetchall() == [('released',)]
+    _no_secret(out)
+
+
+@needs_infer_stack
+@needs_repo
 @needs(shutil.which('tmux') is not None, 'needs tmux')
 @needs(INSPECT_OPENAI_PYTHON is not None, 'needs $AIQ_EVALS_INSPECT_OPENAI_PYTHON')
 def test_four_tmux_workers_keep_scheduler_imports_with_stale_server_environment(

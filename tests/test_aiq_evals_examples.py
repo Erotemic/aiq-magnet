@@ -50,7 +50,7 @@ def test_verified_selection_prepares_independent_measurement_nodes(tmp_path, mon
     selected = tmp_path / 'selection.json'
     selected.write_text(json.dumps(selection))
     path = tmp_path / 'recipe.yaml'
-    assert main(['--endpoint', 'coding', '--worker_python', '/host/python',
+    assert main(['--endpoint', 'coding', '--provider', 'litellm-proxy', '--worker_python', '/host/python',
         '--selection', str(selected), '--image_pins', str(source / 'swebench-verified-full-images.json'),
         '--message_limit', '200', '--agent_protocol', 'minimal-edit/v1', '--lease_ttl', '30d',
         '--lease_timeout', '7200', '--timeout_seconds', '21600', '--output', str(path)]) == 0
@@ -58,6 +58,7 @@ def test_verified_selection_prepares_independent_measurement_nodes(tmp_path, mon
     assert 'claim' not in card
     assert card['kwdagger']['readout_nodes'] == ['evaluate']
     node = card['kwdagger']['pipeline']['nodes']['evaluate']
+    assert node['algo_params']['models'][0]['provider'] == 'litellm-proxy'
     assert node['lease_ttl'] == '30d' and node['lease_timeout'] == 7200
     assert node['perf_params']['timeout_seconds'] == 21600
     shards = card['kwdagger']['matrix']['evaluate.task_options']

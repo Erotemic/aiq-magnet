@@ -58,6 +58,7 @@ def main(argv=True):
     class Config(kwconf.Config):
         kind = kwconf.Value('verified', choices=['verified', 'pro', 'harbor'])
         endpoint = kwconf.Value(None, required=True, help='infer-stack alias')
+        provider = kwconf.Value('openai', help='Native engine model provider (e.g. litellm-proxy for Inspect)')
         served_model = kwconf.Value(None, help='served name; defaults to alias')
         worker_python = kwconf.Value(None, required=True)
         output = kwconf.Value(None, required=True, help='output YAML recipe')
@@ -80,9 +81,11 @@ def main(argv=True):
     from magnet_evals import EvaluationRequest, ModelBinding
 
     root = Path(args.evals_root or Path(magnet_evals.__file__).resolve().parents[1])
+    provider_options = {'responses_api': False} if args.kind == 'verified' else {}
+    if args.kind == 'verified' and args.provider == 'litellm-proxy':
+        provider_options['stream'] = False
     binding = ModelBinding(role='primary', model=args.served_model or args.endpoint,
-                           provider='openai', provider_options=(
-                               {'responses_api': False} if args.kind == 'verified' else {}))
+                           provider=args.provider, provider_options=provider_options)
     requests = None
     if args.kind == 'verified' and args.selection:
         from magnet_evals.benchmarks.swe_bench_verified import profile_requests

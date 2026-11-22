@@ -99,6 +99,10 @@ def lease_runtime(endpoints: dict | str | None, request: dict, environ=None) -> 
                 f'{role!r} to {bindings[role]["model"]!r}; set the model binding to the served name'
             )
     env = {'OPENAI_API_KEY': environ['OPENAI_API_KEY']} if environ.get('OPENAI_API_KEY') else {}
+    if env and any(bindings[role].get('provider') == 'litellm-proxy' for role in endpoints):
+        # Inspect's native proxy client uses its own credential variable. The
+        # value is still the key issued by this same local endpoint lease.
+        env['LITELLM_PROXY_API_KEY'] = env['OPENAI_API_KEY']
     return {role: base_url for role in endpoints}, env
 
 

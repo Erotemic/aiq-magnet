@@ -111,3 +111,21 @@ program-name substring anywhere in a command, including captured directory
 paths; checking actual shell tokens fixes that false positive, and its rerun
 passes. With the four-worker regression and three existing leased Inspect
 cases, 83 exercised cases pass. Focused lint and whitespace checks pass.
+
+## 2026-11-22: reuse Inspect's native proxy client
+
+Model: GPT-6 (Codex); exact serving variant/configuration unavailable.
+
+The coding-benchmark helper now exposes its existing ModelBinding provider
+choice, retaining the OpenAI default. Selecting `litellm-proxy` uses native
+Inspect metadata/error handling and nonstreaming chat requests. For leased
+proxy models, lease_runtime aliases the same gateway key to the SDK's expected
+environment variable. No additional credential, gateway service or provider
+registry is introduced. An unleased auxiliary model does not trigger the alias.
+
+A real null-backend infer-stack lease and pinned Inspect ReAct run exercise
+metadata lookup, a tool call, context-stop scoring, inherited-key replacement,
+credential redaction and lease release. That test and three existing native
+OpenAI primary/grader, reuse and serving-drift cases pass. Recipe/unit checks
+also pass. The evaluator owns two further native completion/context fixtures;
+no live model performance is established by these tests.

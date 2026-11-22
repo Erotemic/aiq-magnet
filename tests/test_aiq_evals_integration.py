@@ -805,6 +805,15 @@ def test_lease_runtime_maps_lease_env_and_refuses_mismatch():
            'INFER_STACK_ENDPOINT_SMOL_135': 'smol-135', 'INFER_STACK_ENDPOINT_JUDGE_ALIAS': 'judge-7'}
     assert lease_runtime('smol-135', request, env) == ({'primary': 'http://gw/v1'}, {'OPENAI_API_KEY': 'lease-key'})
     assert lease_runtime(None, request, env) == ({}, {})
+    proxy = {'models': [{'role': 'primary', 'model': 'smol-135', 'provider': 'litellm-proxy'}]}
+    assert lease_runtime('smol-135', proxy, env) == (
+        {'primary': 'http://gw/v1'},
+        {'OPENAI_API_KEY': 'lease-key', 'LITELLM_PROXY_API_KEY': 'lease-key'},
+    )
+    # An auxiliary provider outside this lease must not receive the gateway key.
+    remote = {'models': [request['models'][0],
+                        {'role': 'grader', 'model': 'external', 'provider': 'litellm-proxy'}]}
+    assert lease_runtime('smol-135', remote, env)[1] == {'OPENAI_API_KEY': 'lease-key'}
     # Several roles, one lease: every alias sits behind the lease's base URL.
     both = {'primary': 'smol-135', 'grader': 'judge-alias'}
     assert lease_runtime(both, request, env)[0] == {'primary': 'http://gw/v1', 'grader': 'http://gw/v1'}

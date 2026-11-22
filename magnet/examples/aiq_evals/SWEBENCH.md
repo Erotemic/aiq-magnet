@@ -56,6 +56,8 @@ through the ordinary scheduler. Model failures scored zero remain zero;
 operational failures supply no score. The generated card publishes measurements
 without a scientific Boolean claim. Partial readouts remain available.
 Native grading runs once; no oracle/NOP or fresh regrade is added to this path.
+Verified selects the native `swe_bench_scorer` metric `mean` (resolved fraction),
+not `accuracy`. A selector correction reuses the same native measurement.
 
 Use `magnet results table RECORD --node evaluate` for per-shard measurements.
 An explicit `--aggregate '{"metrics.evaluate.score":"mean"}'` reports the

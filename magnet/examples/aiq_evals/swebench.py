@@ -98,13 +98,13 @@ def main(argv=True):
         requests = profile_requests(ids, json.loads(Path(args.image_pins).read_text()), binding,
             shard_size=args.shard_size, agent_protocol=args.agent_protocol,
             message_limit=args.message_limit, generation=generation)
-        select = {'scorer': 'swe_bench_scorer', 'metric': 'accuracy'}
+        select = {'scorer': 'swe_bench_scorer', 'metric': 'mean'}
     elif args.kind == 'verified':
         request = EvaluationRequest.from_dict(json.loads((root / 'examples/swebench_verified_request.json').read_text()))
         from dataclasses import replace
 
         request = replace(request, models=(binding,))
-        select = {'scorer': 'swe_bench_scorer', 'metric': 'accuracy'}
+        select = {'scorer': 'swe_bench_scorer', 'metric': 'mean'}
     elif args.kind == 'pro':
         from magnet_evals.benchmarks.swe_bench_pro import profile_request
 

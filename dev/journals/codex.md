@@ -129,3 +129,16 @@ credential redaction and lease release. That test and three existing native
 OpenAI primary/grader, reuse and serving-drift cases pass. Recipe/unit checks
 also pass. The evaluator owns two further native completion/context fixtures;
 no live model performance is established by these tests.
+
+## 2026-11-22: select the native coding-benchmark mean
+
+Model: GPT-6 (Codex); exact serving variant/configuration unavailable.
+
+A completed native Verified measurement exposed the recipe helper selecting
+`accuracy`, while the pinned scorer emits `mean` and `std`. The native result
+was valid, but the report correctly withheld its unmatched metric. Corrected
+both the smoke and selected-set helper paths to select `mean`; extended the
+existing recipe regression to check that contract. The regenerated selector
+also reads a retained native zero as eligible with complete coverage, without
+running inference or grading. Selection changes node readout, not the stored
+measurement identity. The helper test and focused lint pass.

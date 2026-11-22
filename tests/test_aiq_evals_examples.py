@@ -59,6 +59,7 @@ def test_verified_selection_prepares_independent_measurement_nodes(tmp_path, mon
     assert card['kwdagger']['readout_nodes'] == ['evaluate']
     node = card['kwdagger']['pipeline']['nodes']['evaluate']
     assert node['algo_params']['models'][0]['provider'] == 'litellm-proxy'
+    assert node['algo_params']['select'] == {'scorer': 'swe_bench_scorer', 'metric': 'mean'}
     assert node['lease_ttl'] == '30d' and node['lease_timeout'] == 7200
     assert node['perf_params']['timeout_seconds'] == 21600
     shards = card['kwdagger']['matrix']['evaluate.task_options']

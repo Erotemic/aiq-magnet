@@ -5,16 +5,16 @@ The boundary under test is orchestration-outside / work-inside: MAGNET
 compiles the DAG on the host, each node's command runs in an image.
 """
 
+import shlex as _shlex
+import sys as _sys
+
 import kwdagger
 import pytest
 
-from magnet import containers
-from magnet import leasing
+from magnet import containers, leasing
 from magnet.leasing import INSIDE_LEASE_ENVVAR
 from magnet.process_node import MagnetProcessNode
 
-import shlex as _shlex
-import sys as _sys
 #: On the host route a bare ``python`` renders as this interpreter (magnet.containers.host_interpreter).
 HOST_PY = _shlex.quote(_sys.executable)
 
@@ -248,3 +248,20 @@ def test_bare_python_means_the_interpreter_that_runs_the_node():
     assert node.command.startswith('docker run')
     assert ' \\\n    python -m pkg.work' in node.command
     assert sys.executable not in node.command
+
+
+@pytest.mark.parametrize('captured', [None, '/a path/with spaces:/other;$(false)'])
+def test_host_import_path_survives_a_different_worker_environment(tmp_path, monkeypatch, captured):
+    import json
+    import os
+    import subprocess
+
+    if captured is None:
+        monkeypatch.delenv('PYTHONPATH', raising=False)
+    else:
+        monkeypatch.setenv('PYTHONPATH', captured)
+    code = 'import os,json; print(json.dumps(os.environ.get("PYTHONPATH")))'
+    command = containers.host_interpreter('python -c ' + _shlex.quote(code), capture_pythonpath=True)
+    process = subprocess.run(['bash', '-c', command], cwd=tmp_path,
+        env={**os.environ, 'PYTHONPATH': '/wrong/checkout'}, text=True, capture_output=True, check=True)
+    assert json.loads(process.stdout) == (captured or '')

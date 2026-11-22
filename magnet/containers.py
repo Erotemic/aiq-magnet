@@ -118,12 +118,17 @@ def _coerce_name_list(
 
 
 
-def host_interpreter(command: str) -> str:
+def host_interpreter(command: str, *, capture_pythonpath: bool = False) -> str:
     """Replace a leading bare ``python`` with :data:`sys.executable`.
 
     Host workers may not inherit the orchestrator's virtual environment. Only
     an exact leading ``python`` token is replaced; ``python3`` and explicit
     interpreter paths are unchanged.
+
+    ``capture_pythonpath`` preserves the scheduler's import path for a host
+    job. A pre-existing tmux server can otherwise supply a different path (or
+    none), causing resolution and execution to import different checkouts.
+    An unset path is captured as empty to override a stale worker value.
 
     Example:
         >>> from magnet.containers import host_interpreter
@@ -135,7 +140,9 @@ def host_interpreter(command: str) -> str:
         'python3 -m pkg.work'
     """
     if command == 'python' or command.startswith(('python ', 'python\t', 'python\n', 'python \\')):
-        return shlex.quote(sys.executable) + command[len('python'):]
+        command = shlex.quote(sys.executable) + command[len('python'):]
+    if capture_pythonpath:
+        command = 'env ' + shlex.quote('PYTHONPATH=' + os.environ.get('PYTHONPATH', '')) + ' ' + command
     return command
 
 

@@ -319,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
             'schema': EVALUATION_SCHEMA, 'status': 'not-run', 'request': request.to_dict(),
             'measurement_identity': resolved.identity.to_dict(), 'import_identity': current_import,
             'preflight_identity': args.measurement_identity, 'preflight_import_identity': args.import_identity,
+            'resolved_facts': resolved.resolved_facts,
         }, stale)
     try:
         outcome = ensure_evaluation(

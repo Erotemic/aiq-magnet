@@ -315,6 +315,64 @@ def test_inspect_serving_drift_stays_unscored(tmp_path, lease_env, monkeypatch, 
 CONTAINER_VENV = os.environ.get('MAGNET_TEST_CONTAINER_VENV')
 
 
+@needs_infer_stack
+@needs_repo
+@needs(shutil.which('tmux') is not None, 'needs tmux')
+@needs(INSPECT_OPENAI_PYTHON is not None, 'needs $AIQ_EVALS_INSPECT_OPENAI_PYTHON')
+def test_four_tmux_workers_keep_scheduler_imports_with_stale_server_environment(
+    tmp_path, lease_env, monkeypatch,
+):
+    """Reproduce a server created before the scheduler exported its source path."""
+    repo_on_worker_path(monkeypatch)
+    expected = tmp_path / 'expected checkout'
+    stale = tmp_path / 'stale checkout'
+    expected.mkdir()
+    stale.mkdir()
+    source = ('from inspect_ai import task\n'
+              'from magnet_evals.examples.inspect_tasks import tool_task\n'
+              '@task\ndef selected(index):\n    return tool_task()\n')
+    (expected / 'import_path_probe.py').write_text(source)
+    (stale / 'import_path_probe.py').write_text(source + '\n# Older task source.\n')
+    original_path = os.environ.get('PYTHONPATH', '')
+    monkeypatch.setenv('PYTHONPATH', str(expected) + os.pathsep + original_path)
+    socket_dir = tmp_path / 'tmux'
+    socket_dir.mkdir()
+    monkeypatch.setenv('TMUX_TMPDIR', str(socket_dir))
+    monkeypatch.delenv('TMUX', raising=False)
+    # Private server: never change the developer's own tmux environment.
+    subprocess.run(['tmux', '-f', '/dev/null', 'new-session', '-d', '-s', 'seed'],
+        env={**os.environ, 'PYTHONPATH': str(stale) + os.pathsep + original_path}, check=True)
+    try:
+        algo = {
+            'engine': 'inspect_ai', 'task': 'python:import_path_probe:selected',
+            'data_revision': 'fixture-v1', 'task_options': {'index': 0},
+            'models': [{'role': 'primary', 'model': 'gpt-4o-mini', 'provider': 'openai',
+                        'revision': 'example-endpoint-v1',
+                        'provider_options': {'base_url': DEAD_URL, 'responses_api': False}}],
+            'engine_options': {'registration_modules': ['magnet_evals.examples.inspect_tasks'],
+                               'required_secrets': ['OPENAI_API_KEY']},
+            'select': {'scorer': 'match', 'metric': 'accuracy'},
+        }
+        node = evaluation_node(algo, worker=INSPECT_OPENAI_PYTHON, endpoint='gpt-4o-mini')
+        path = write_recipe(tmp_path, {'evaluate': node}, claim='assert metrics.evaluate.score == 1',
+            matrix={'evaluate.task_options': [{'index': i} for i in range(4)]})
+        out = tmp_path / 'out'
+        _, card = evaluate(path, out, lease_settings=_lease_settings(), backend='tmux',
+                           tmux_workers=4, queue_name='import-path-probe', print_commands=False)
+        assert card.result == 'VERIFIED', [c.evidence_row for c in card.cell_results]
+        records = [json.loads(p.read_text()) for p in evaluations(out)]
+        assert len(records) == 4 and all(r['action'] == 'executed' for r in records)
+        for record in records:
+            run = magnet_evals.load_run(record['run_path'])
+            assert run.resolved.resolved_facts['task_source_path'] == str(expected / 'import_path_probe.py')
+            assert record['preflight_identity'] == run.resolved.identity.digest
+        with sqlite3.connect(lease_env) as db:
+            assert db.execute('select state from leases').fetchall() == [('released',)] * 4
+        _no_secret(out)
+    finally:
+        subprocess.run(['tmux', 'kill-server'], check=False, capture_output=True)
+
+
 def _venv_base(venv: Path) -> Path:
     home = next(line.split('=', 1)[1].strip() for line in (venv / 'pyvenv.cfg').read_text().splitlines()
                 if line.split('=', 1)[0].strip() == 'home')

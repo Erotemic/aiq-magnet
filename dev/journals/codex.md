@@ -78,3 +78,36 @@ the pinned Inspect runtime. Reinstalling with the evaluator's existing Python
 3.12 constraints restored native execution. Reusing the recorded environment
 is preferable to inventing a second worker bootstrap. This change adds no
 campaign controller or second grading implementation.
+
+## 2026-11-21 18:55:30 -0500
+
+Model: GPT-6 (Codex); exact serving variant/configuration unavailable.
+
+The user reported a queue of failed native evaluation jobs. Scheduling and
+execution were resolving the same request through different task checkouts:
+a pre-existing tmux server did not inherit the scheduler's exported PYTHONPATH.
+The resulting identity mismatch stopped evaluation before native execution.
+Changing only the task-source hash in the scheduled identity exactly reproduced
+the observed runtime identity, so bypassing the identity gate would have hidden
+a real source discrepancy.
+
+Added opt-in import-path capture to host_interpreter, enabled for EvaluationNode
+resolution, gate, child and completion commands. Existing generic host nodes
+retain their previous behavior. Capturing an unset path as empty also prevents
+a stale worker path from taking precedence. Failed identity checks retain their
+resolved source facts for diagnosis without another probe of the running job.
+
+A private tmux server seeded with a conflicting task path ran four native
+Inspect evaluations through real null-backend leases. All used the scheduler's
+source, emitted valid results and released their leases. Existing leased
+primary/grader, result reuse and configuration-drift cases also pass. Serial
+subprocess tests were insufficient here: they inherited the same environment
+that scheduled the work. Test the persistent queue server's environment as a
+separate execution context whenever render-time source resolution matters.
+
+The broader container/native-integration/example suite passed 78 cases with
+three unavailable optional-engine cases skipped. One assertion searched for a
+program-name substring anywhere in a command, including captured directory
+paths; checking actual shell tokens fixes that false positive, and its rerun
+passes. With the four-worker regression and three existing leased Inspect
+cases, 83 exercised cases pass. Focused lint and whitespace checks pass.

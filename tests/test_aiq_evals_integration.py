@@ -866,11 +866,12 @@ def test_leasing_is_decided_by_a_gate_when_the_node_runs(tmp_path, monkeypatch):
     # never inside the lease.
     (resolve,) = [tok[len('--resolve_command='):] for tok in tokens if tok.startswith('--resolve_command=')]
     assert resolve.startswith('docker run') and 'magnet.backends.aiq_evals.cli.resolve_node' in resolve
-    assert 'infer-stack' not in resolve
+    assert 'infer-stack' not in shlex.split(resolve.replace('\\\n', ' '))
     # An import runs no model: no gate and no lease.
     importer = _leased_node(tmp_path / 'store', 'c' * 64, monkeypatch, import_source=str(tmp_path))
     with preflight_scope(True):
-        assert 'infer-stack' not in importer.command and '--leased_command' not in importer.command
+        tokens = shlex.split(importer.command.replace('\\\n', ' '))
+        assert 'infer-stack' not in tokens and '--leased_command' not in importer.command
 
 
 GATE_CHILD = """

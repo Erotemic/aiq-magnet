@@ -492,7 +492,7 @@ class EvaluationNode(MagnetProcessNode):
             timeout = self._setting('preflight_timeout_seconds')
             if timeout not in (None, ''):
                 gate_args['resolve_timeout'] = str(timeout)
-        return host_interpreter(render(gate_args))
+        return host_interpreter(render(gate_args), capture_pythonpath=True)
 
     def expected_evaluation(self) -> dict[str, Any]:
         """What this node's ``evaluation.json`` must record to count as done."""
@@ -545,7 +545,7 @@ class EvaluationNode(MagnetProcessNode):
             return self.wrap_with_container(command)
         from magnet.containers import host_interpreter
 
-        return host_interpreter(command)
+        return host_interpreter(command, capture_pythonpath=True)
 
     def load_result(self, node_dpath: Any) -> Any:
         return load_evaluation_row(self, node_dpath)

@@ -7,26 +7,17 @@ engine-specific execution logic: ``engine`` names the evaluation engine
 (``helm``, ``olmo_eval``, ``inspect_ai``), while the recipe's ``backend`` stays
 the kwdagger/cmd_queue scheduler (``serial``, ``tmux``, ...).
 
-Identity (M3):
+Planning and runtime identity:
 
-* For a real schedule, the node preflight-resolves its request before kwdagger
-  hashes it. Preflight runs :mod:`~magnet.backends.aiq_evals.cli.resolve_node`
-  through the *same* container/host wrapper as the node's command, so an
-  engine or ``worker_python`` that exists only in the node's container
-  resolves exactly as execution will. The resolved measurement digest, and
-  for an import the native content identity of ``import_source``, become the
-  computed ``measurement_identity`` / ``import_identity`` parameters. kwdagger's
-  node identity therefore changes with task code, engine, adapter, or
-  imported-file changes, not only with the recipe text.
-* Those two parameters are computed, never configured: a recipe that sets them
-  is rejected, and every real preflight overwrites whatever value is present.
-* A non-reusable identity gets a unique nonce, so it is never skipped as done.
-* Dry runs never resolve (M9); they only compile and statically check the
-  request shape, evidence selector, and coverage policy.
-* ``does_exist`` accepts the primary output only while the run it points at
-  still validates as the same successful bundle (measurement, normalized
-  artifact, and import identities). A stale marker cannot hide a failed,
-  missing, replaced, or tampered run.
+* Node IDs and commands are built from declared configuration only. Planning
+  does not import native engines, query serving catalogs or run subprocesses.
+* The generated command resolves native facts in the execution environment.
+  Its runtime measurement identity belongs to the evaluator's shared store;
+  a different kwdagger node can reuse that same native measurement.
+* With leasing, the executing gate binds serving facts and resolves the request
+  before checking the store. A cached result needs no model lease. The gate's
+  runtime handoff file is shared with its container/worker and leased child.
+* Legacy rendered commands with explicit identity arguments remain supported.
 
 Evidence (M4/M5): ``evaluation.json`` records *which* run and *how* to project
 it (selector, coverage policy), never the claim-facing values themselves.
@@ -57,12 +48,10 @@ supports them (Inspect auxiliary roles; OLMo Eval primary only; HELM none).
 from __future__ import annotations
 
 import contextlib
-import contextvars
 import json
 import os
 import shlex
 import subprocess
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -72,10 +61,10 @@ REQUEST_KEYS = (
     'engine', 'task', 'task_revision', 'data_revision', 'models',
     'task_options', 'generation', 'engine_options',
 )
-#: Parameters filled by preflight. They take part in kwdagger's node identity
-#: but may not be configured by a recipe.
+#: Legacy runtime-result slots. They remain empty in declared node config;
+#: generated jobs fill native facts only after execution begins.
 COMPUTED_KEYS = ('measurement_identity', 'import_identity', 'endpoint_provenance')
-DRY_RUN_IDENTITY = 'unresolved-dry-run'
+DRY_RUN_IDENTITY = 'unresolved-dry-run'  # compatibility constant; no longer used in planning
 EVALUATION_SCHEMA = 'magnet-aiq-evals-node/2'
 
 
@@ -152,35 +141,12 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {'1', 'true', 'yes'}
 
 
-class _PreflightState:
-    """Resolutions and nonces for one schedule compilation."""
-
-    def __init__(self) -> None:
-        self.resolutions: dict[str, dict[str, Any]] = {}
-        self.nonces: dict[str, str] = {}
-        self.provenance: dict[str, dict[str, Any]] = {}
-
-
-_PREFLIGHT: contextvars.ContextVar[_PreflightState | None] = contextvars.ContextVar(
-    'magnet_aiq_evals_preflight', default=None,
-)
-
-
 @contextlib.contextmanager
 def preflight_scope(enabled: bool):
-    """Resolve EvaluationNode identities while a real schedule compiles (M3/M9).
+    """Compatibility context; scheduling never resolves native requests."""
+    # Compatibility only: native work belongs to generated commands.
+    yield
 
-    Resolutions are memoized only within one scope: kwdagger may configure the
-    same node more than once while compiling a schedule, and every call must
-    see the same identity, but each new schedule re-resolves (task code or
-    imported files may have changed) and draws fresh nonces for non-reusable
-    identities. Dry runs pass ``enabled=False``.
-    """
-    token = _PREFLIGHT.set(_PreflightState() if enabled else None)
-    try:
-        yield
-    finally:
-        _PREFLIGHT.reset(token)
 
 
 class PreflightError(RuntimeError):
@@ -193,7 +159,7 @@ DEFAULT_PREFLIGHT_TIMEOUT = 900.0
 
 
 def run_preflight(command: str, timeout: float | None = DEFAULT_PREFLIGHT_TIMEOUT) -> dict[str, Any]:
-    """Run a rendered ``resolve_node`` command and parse its resolution.
+    """Execute a native resolver from a running job (legacy helper name).
 
     The command runs in its own process group. On timeout the group gets
     SIGTERM (which ``docker run`` forwards to its container) and then SIGKILL,
@@ -260,8 +226,8 @@ class EvaluationNode(MagnetProcessNode):
         # reuses the native evaluation from the aiq-magnet-evals store.
         'select': None,
         'coverage_policy': 'complete',
-        # Computed by preflight (see COMPUTED_KEYS); never configured.
-        'measurement_identity': DRY_RUN_IDENTITY,
+        # Legacy slots kept empty in planning (see COMPUTED_KEYS).
+        'measurement_identity': None,
         'import_identity': None,
         'endpoint_provenance': None,
     }
@@ -271,7 +237,7 @@ class EvaluationNode(MagnetProcessNode):
         # Engine worker interpreter (engines stay out of MAGNET's environment).
         'worker_python': None,
         'timeout_seconds': None,
-        # Bound on the scheduling-time resolution (seconds); None disables it.
+        # Bound on execution-time request resolution (seconds); None disables it.
         'preflight_timeout_seconds': DEFAULT_PREFLIGHT_TIMEOUT,
         'allow_external_symlinks': False,
         # infer-stack catalog alias to lease for the primary model (M8). Operational:
@@ -301,8 +267,8 @@ class EvaluationNode(MagnetProcessNode):
         )
         if configured:
             raise ValueError(
-                f'EvaluationNode parameters {configured} are computed by preflight '
-                'resolution and cannot be set by a recipe'
+                f'EvaluationNode parameters {configured} are computed at runtime '
+                'and cannot be set by a recipe'
             )
         for key in ('algo_params', 'perf_params'):
             if kwargs.get(key) is not None:
@@ -314,15 +280,14 @@ class EvaluationNode(MagnetProcessNode):
         return dict(self.final_config or {})
 
     def _setting(self, key: str) -> Any:
-        # Read perf settings without touching final_config (which would recurse
-        # through final_algo_config).
+        # Read perf settings without recursing through final_config.
         value = self.config.get(key)
         return self.perf_params.get(key) if value is None else value
 
     def lease_roles(self) -> dict[str, str]:
         """``{model role: infer-stack alias}`` this node leases, if any."""
         # Raw settings, not final_config: the container wrapper asks for these
-        # while kwdagger is still finalizing this node's config (preflight).
+        # while kwdagger is still finalizing declared configuration.
         endpoint = self._setting('endpoint')
         roles = {'primary': str(endpoint)} if endpoint else {}
         for role, alias in _decode_mapping(self._setting('endpoints'), 'endpoints').items():
@@ -358,45 +323,12 @@ class EvaluationNode(MagnetProcessNode):
 
     @property
     def final_algo_config(self) -> Any:
-        """Algo params with the preflight-resolved identities (M3).
-
-        kwdagger hashes this mapping into the node id. Inside a real
-        ``preflight_scope`` the request is resolved once per schedule in the
-        node's own execution environment; outside it (dry runs, result
-        loading) nothing resolves. Either way, the computed identities replace
-        any value a configuration supplied.
-        """
+        """Declared parameters only; native facts are resolved by the command."""
         config = type(super().final_algo_config)(super().final_algo_config)
         self._check_static(config)
-        state = _PREFLIGHT.get()
-        if state is None or missing_request_keys(dict(config)):
-            config['measurement_identity'] = DRY_RUN_IDENTITY
-            config['import_identity'] = None
-            config['endpoint_provenance'] = None
-            return config
-        roles = self.lease_roles()
+        config['measurement_identity'] = None
+        config['import_identity'] = None
         config['endpoint_provenance'] = None
-        if roles and _truthy(self._setting('verify_serving_provenance')):
-            from magnet.backends.aiq_evals.serving import catalog_provenance
-
-            key = json.dumps(roles, sort_keys=True)
-            if key not in state.provenance:
-                state.provenance[key] = catalog_provenance(roles)
-            config['endpoint_provenance'] = state.provenance[key]
-        command = self.preflight_command(config)
-        resolution = state.resolutions.get(command)
-        if resolution is None:
-            timeout = self._setting('preflight_timeout_seconds')
-            resolution = state.resolutions[command] = run_preflight(
-                command, None if timeout in (None, '') else float(timeout),
-            )
-        identity = resolution['measurement_identity']
-        if identity['reusable']:
-            config['measurement_identity'] = identity['digest']
-        else:
-            nonce = state.nonces.setdefault(command, uuid.uuid4().hex)
-            config['measurement_identity'] = f'unresolved-{nonce}'
-        config['import_identity'] = resolution.get('import_identity')
         return config
 
     def _check_static(self, config: Any) -> None:
@@ -411,9 +343,11 @@ class EvaluationNode(MagnetProcessNode):
         if policy not in COVERAGE_POLICIES:
             raise ValueError(f'EvaluationNode coverage_policy must be one of {COVERAGE_POLICIES}; got {policy!r}')
 
-    def preflight_command(self, config: Any) -> str:
-        """The resolution command, wrapped exactly like the node's own command."""
+    def preflight_command(self, config: Any, *, runtime_request_file: str | None = None) -> str:
+        """Render the execution-time resolver; construction never runs it."""
         args = {'request': json.dumps(build_request_dict(dict(config)), sort_keys=True)}
+        if runtime_request_file is not None:
+            args['runtime_request_file'] = runtime_request_file
         worker = self._setting('worker_python')
         if worker not in (None, ''):
             args['worker_python'] = worker
@@ -466,6 +400,7 @@ class EvaluationNode(MagnetProcessNode):
         roles = self.lease_roles()
         if roles:
             args['endpoints'] = json.dumps(roles, sort_keys=True)
+        args['verify_serving_provenance'] = str(_truthy(config.get('verify_serving_provenance', True)))
 
         def render(extra: dict[str, str]) -> str:
             argstr = ' \\\n    '.join(
@@ -483,12 +418,14 @@ class EvaluationNode(MagnetProcessNode):
         # lease, and a run that vanished after scheduling is still leased.
         from magnet.containers import host_interpreter
 
+        runtime_file = str(Path(str(config.get('out_dpath', '.'))) / 'runtime_request.json')
+        args['runtime_request_file'] = runtime_file
         child = self.wrap_with_lease(self._wrap_interpreter(render({'lock_held': 'True'})))
         gate_args = {'leased_command': child}
         if not missing_request_keys(config):
-            # The gate re-resolves before reusing a stored run, exactly like
-            # preflight: same host/container wrapper, never inside the lease.
-            gate_args['resolve_command'] = self.preflight_command(config)
+            # This string runs only when the gate executes, in the same
+            # target host/container wrapper as evaluation, before any lease.
+            gate_args['resolve_command'] = self.preflight_command(config, runtime_request_file=runtime_file)
             timeout = self._setting('preflight_timeout_seconds')
             if timeout not in (None, ''):
                 gate_args['resolve_timeout'] = str(timeout)
@@ -520,9 +457,9 @@ class EvaluationNode(MagnetProcessNode):
     @property
     def does_exist(self) -> bool:
         """Done only if the recorded run still validates and matches this node."""
-        # Even an existing canonical result must pass the host catalog check.
-        # Otherwise scheduling could skip the queued gate after an alias changed.
-        if self._final().get('endpoint_provenance'):
+        # The executing command owns native-cache lookup. Declared node IDs
+        # do not pretend to encode an unobserved runtime environment.
+        if not self._final().get('measurement_identity'):
             return False
         fpath = self._evaluation_fpath()
         return fpath is not None and evaluation_is_valid(Path(fpath), self.expected_evaluation())
@@ -534,7 +471,7 @@ class EvaluationNode(MagnetProcessNode):
             return None
         expected = json.dumps(self.expected_evaluation(), sort_keys=True)
         # Keep the scheduling record, but reach the gate for the catalog check.
-        pending = ' --force_pending=True' if self._final().get('endpoint_provenance') else ''
+        pending = ' --force_pending=True' if not self._final().get('measurement_identity') else ''
         return self._wrap_interpreter(
             'python -m magnet.backends.aiq_evals.cli.check_done '
             f'{shlex.quote(str(fpath))} --expected={shlex.quote(expected)}{pending}'
@@ -662,14 +599,23 @@ def check_scheduled(summary: dict[str, Any], run: Any, record: dict[str, Any] | 
     _check_acquisition_slot(summary, record)
     if 'request' in record:
         scheduled = EvaluationRequest.from_dict(record['request']).to_dict()
-        if EvaluationRequest.from_dict(summary.get('request') or {}).to_dict() != scheduled:
+        declared = summary.get('declared_request', summary.get('request')) or {}
+        if EvaluationRequest.from_dict(declared).to_dict() != scheduled:
             raise InvalidEvaluation('recorded request differs from the scheduled request')
         # A reusable run is the scheduled measurement when its validated
         # identity and acquisition slot are (checked above): it may have been
         # computed with other operational fields (endpoint URL, credential
         # names), which do not enter identity. A non-reusable run belongs to
         # this node alone, so its request must be exactly the scheduled one.
-        if not record['expected'].get('measurement_identity') and run.resolved.request.to_dict() != scheduled:
+        if 'declared_request' in summary:
+            from magnet.backends.aiq_evals.serving import bind_provenance
+
+            actual = bind_provenance(scheduled, summary.get('endpoint_provenance') or {})
+            if EvaluationRequest.from_dict(summary.get('request') or {}).to_dict() != actual:
+                raise InvalidEvaluation('runtime request differs from declared work and serving facts')
+            if not run.resolved.identity.reusable and run.resolved.request.to_dict() != actual:
+                raise InvalidEvaluation('referenced run was computed for a different request')
+        elif not record['expected'].get('measurement_identity') and run.resolved.request.to_dict() != scheduled:
             raise InvalidEvaluation('referenced run was computed for a different request')
 
 
@@ -692,9 +638,14 @@ def _check_acquisition_slot(summary: dict[str, Any], record: dict[str, Any]) -> 
     store = ResultStore(store_root)
     expected = record['expected']
     digest = expected.get('measurement_identity')
+    import_identity = expected.get('import_identity')
+    if 'declared_request' in summary:
+        observed = summary.get('measurement_identity') or {}
+        digest = observed.get('digest') if observed.get('reusable') else None
+        import_identity = summary.get('import_identity')
     run_path = Path(str(summary.get('run_path')))
-    if digest and expected.get('import_identity'):
-        slot = store.import_path(digest, expected['import_identity'])
+    if digest and import_identity:
+        slot = store.import_path(digest, import_identity)
     elif digest:
         slot = store.run_path(digest)
     else:

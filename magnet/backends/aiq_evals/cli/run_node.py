@@ -44,6 +44,8 @@ class RunNodeCLI(kwconf.Config):
     measurement_identity = kwconf.Value(None, parser=str, help='preflight measurement digest')
     import_identity = kwconf.Value(None, parser=str, help='preflight native content identity')
     endpoint_provenance = kwconf.Value(None, parser=str, help='scheduled scientific serving facts by role')
+    runtime_request_file = kwconf.Value(None, parser=str, help='execution-time request handoff file')
+    verify_serving_provenance = kwconf.Value(True, isflag=True, help='bind serving facts when the command executes')
     endpoint = kwconf.Value(None, parser=str, help='leased infer-stack alias (primary model)')
     endpoints = kwconf.Value(None, parser=str, help='leased aliases by model role, JSON {role: alias}')
     leased_command = kwconf.Value(
@@ -122,20 +124,54 @@ def _write_evaluation(args, out_dpath: Path, summary: dict) -> None:
     tmp.replace(fpath)  # the primary output appears atomically
 
 
-def gate(args, out_dpath: Path) -> int:
-    """Decide under the store's acquisition lock whether a leased run is needed.
+def _prepare_runtime_request(args) -> dict:
+    """Bind runtime facts on the execution host, then resolve in its worker.
 
-    Runs on the scheduling host. With a reusable scheduled identity it takes
-    the acquisition lock, and if a valid canonical run of the scheduled
-    measurement exists it first re-resolves the request (``--resolve_command``,
-    the node's preflight command: same host/container environment, no lease).
-    If the identity changed since scheduling (task code, engine, adapter), the
-    node asks to be rescheduled (exit 3); otherwise it records reuse without
-    leasing anything. Otherwise it runs the
-    leased child (``--leased_command``; the child's ``ensure`` knows the lock
-    is held) and keeps the lock until the child exits, so concurrent nodes for
-    one measurement start one lease. A non-reusable identity always runs the
-    child. SIGTERM reaches the child's process group (SIGTERM, then SIGKILL).
+    The handoff is in the node output directory, already shared with container
+    workers. The planning machine only renders its path; it never opens it.
+    """
+    from magnet.backends.aiq_evals.pipeline import run_preflight
+    from magnet.backends.aiq_evals.serving import (
+        bind_provenance,
+        catalog_provenance,
+    )
+
+    declared = json.loads(args.request)
+    roles = json.loads(args.endpoints) if args.endpoints else {'primary': args.endpoint}
+    provenance = catalog_provenance(roles) if _truthy(args.verify_serving_provenance) else {}
+    payload = {'request': bind_provenance(declared, provenance),
+               'declared_request': declared, 'endpoint_provenance': provenance}
+    path = Path(args.runtime_request_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def publish():
+        temporary = path.with_suffix('.tmp')
+        temporary.write_text(json.dumps(payload, sort_keys=True) + '\n')
+        temporary.replace(path)
+
+    publish()
+    resolution = run_preflight(args.resolve_command, args.resolve_timeout)
+    payload.update(resolution)
+    publish()
+    return payload
+
+
+def _apply_runtime_request(args, payload: dict) -> None:
+    args.request = json.dumps(payload['request'])
+    args.endpoint_provenance = json.dumps(payload['endpoint_provenance'])
+    identity = payload['measurement_identity']
+    args.measurement_identity = identity['digest'] if identity['reusable'] else 'unresolved-runtime'
+    args.import_identity = payload.get('import_identity')
+
+
+def gate(args, out_dpath: Path) -> int:
+    """Resolve on the execution host and reuse or acquire the native result.
+
+    New commands first bind current serving facts and resolve through their
+    target-context command. They then take the native measurement's store lock.
+    A cached measurement is published without a model lease; otherwise the
+    leased child runs under that lock. Legacy commands with pinned identities
+    retain their runtime drift check. No part of this runs during planning.
     """
     import asyncio
     import os
@@ -148,12 +184,16 @@ def gate(args, out_dpath: Path) -> int:
     from magnet.backends.aiq_evals.pipeline import EVALUATION_SCHEMA
     from magnet.backends.aiq_evals.projection import normalize_selector
 
+    declared_request = json.loads(args.request)
+    if args.runtime_request_file:
+        _apply_runtime_request(args, _prepare_runtime_request(args))
     request = EvaluationRequest.from_dict(json.loads(args.request))
     from magnet.backends.aiq_evals.serving import verify_catalog
 
     try:
-        verify_catalog(json.loads(args.endpoints) if args.endpoints else {'primary': args.endpoint},
-                       json.loads(args.endpoint_provenance) if args.endpoint_provenance else {})
+        if not args.runtime_request_file:
+            verify_catalog(json.loads(args.endpoints) if args.endpoints else {'primary': args.endpoint},
+                           json.loads(args.endpoint_provenance) if args.endpoint_provenance else {})
     except (OSError, ValueError, subprocess.TimeoutExpired) as ex:
         return _reschedule(out_dpath, {'status': 'not-run'}, [str(ex)])
     digest = args.measurement_identity or ''
@@ -195,6 +235,9 @@ def gate(args, out_dpath: Path) -> int:
             run_preflight,
         )
 
+        if args.runtime_request_file:
+            # This invocation just resolved the current request before lookup.
+            return []
         if not args.resolve_command:
             return ['no resolve command: cannot confirm the scheduled identity still holds']
         try:
@@ -236,6 +279,7 @@ def gate(args, out_dpath: Path) -> int:
                 'select': normalize_selector(json.loads(args.select) if args.select else None),
                 'coverage_policy': args.coverage_policy,
                 'request': request.to_dict(),
+                'declared_request': declared_request,
             })
             return 0
 
@@ -285,15 +329,28 @@ def main(argv: list[str] | None = None) -> int:
         out_dpath = Path(args.out_dpath)
         out_dpath.mkdir(parents=True, exist_ok=True)
         return gate(args, out_dpath)
+    declared_request = json.loads(args.request)
+    if args.runtime_request_file:
+        runtime = json.loads(Path(args.runtime_request_file).read_text())
+        declared_request = runtime['declared_request']
+        _apply_runtime_request(args, runtime)
     request_dict = json.loads(args.request)
     select = normalize_selector(json.loads(args.select) if args.select else None)
     out_dpath = Path(args.out_dpath)
     out_dpath.mkdir(parents=True, exist_ok=True)
     roles = json.loads(args.endpoints) if args.endpoints else ({'primary': args.endpoint} if args.endpoint else {})
     if not args.import_source:
-        from magnet.backends.aiq_evals.serving import verify_lease
+        from magnet.backends.aiq_evals.serving import (
+            bind_provenance,
+            lease_provenance,
+            verify_lease,
+        )
 
         try:
+            if roles and _truthy(args.verify_serving_provenance) and not args.endpoint_provenance:
+                provenance = lease_provenance(roles)
+                args.endpoint_provenance = json.dumps(provenance)
+                request_dict = bind_provenance(request_dict, provenance)
             verify_lease(roles, json.loads(args.endpoint_provenance) if args.endpoint_provenance else {})
         except (OSError, ValueError) as ex:
             return _reschedule(out_dpath, {'status': 'not-run'}, [str(ex)])
@@ -336,8 +393,8 @@ def main(argv: list[str] | None = None) -> int:
             model_endpoints=model_endpoints,
             env=lease_env,
             lock_held=_truthy(args.lock_held),
-            # Import exactly the content this node was scheduled for, or nothing.
-            expected_import_identity=args.import_identity or None,
+            # Import exactly the content identified for this acquisition.
+            expected_import_identity=args.import_identity or current_import,
         )
     except ImportIdentityMismatch as ex:
         return _reschedule(out_dpath, {
@@ -363,6 +420,7 @@ def main(argv: list[str] | None = None) -> int:
         'select': select,
         'coverage_policy': args.coverage_policy,
         'request': request.to_dict(),
+        'declared_request': declared_request,
     }
     # The imported files could still change between hashing and copying.
     stale = _stale_identities(args, identity.digest, outcome.import_identity)

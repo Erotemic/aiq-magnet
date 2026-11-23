@@ -142,3 +142,38 @@ existing recipe regression to check that contract. The regenerated selector
 also reads a retained native zero as eligible with complete coverage, without
 running inference or grading. Selection changes node readout, not the stored
 measurement identity. The helper test and focused lint pass.
+
+
+## 2026-11-22: command construction without runtime resolution
+
+Model: GPT-6 (Codex); exact serving variant/configuration unavailable.
+
+EvaluationNode.final_algo_config launched native resolvers while kwdagger read
+configuration for hashing. That required the planning machine to have the
+execution environment and repeated engine imports before queue submission.
+A mandatory preparation phase or warm resolver would preserve the same defect.
+
+Configuration now describes declared work only. Generated jobs resolve native
+facts, bind serving provenance and check the shared native store at execution.
+The leased gate writes its runtime request into the shared output directory;
+the native worker and leased child use that handoff. Cached results take no
+lease. Existing rendered commands with explicit identity arguments still work.
+The native measurement algorithm and stored bundles are unchanged. A completed
+outer output is not a substitute for checking mutable native inputs at runtime.
+Readout retains both declared request and observed request/identity, and still
+validates native acquisition slots and imported snapshots.
+
+Prepared on fix/offline-command-planning in an isolated worktree; do not switch
+an active campaign's source underneath its workers. AGENTS.md and the evaluator's
+ADR-0013 record the boundary for future changes.
+
+Validation: the integration, example, lease, container and offline-planning
+suite exercised 67 passing cases with seven optional cases unavailable. Its
+only initial failure was a /proc cleanup-test race (ProcessLookupError while
+reading a process that had exited); the corrected cleanup check and both
+planning cases pass. Native Inspect uses the pinned SDK, and real tmux workers
+exercise import-path isolation and lease cleanup. Focused lint passes. An
+ordinary 500-request schedule wrote its commands in 1.52 seconds with native
+imports, catalog queries and subprocess creation forbidden. A real retained
+native benchmark bundle was reused through the new runtime gate with the same
+measurement identity and no inference. No GPU workload was run here.

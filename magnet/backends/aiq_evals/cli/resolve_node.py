@@ -1,21 +1,9 @@
-"""Preflight command: resolve an EvaluationNode's identities (plan M3).
+"""Execution-time native request resolution for EvaluationNode jobs.
 
-Rendered and run by :class:`magnet.backends.aiq_evals.EvaluationNode` while a
-schedule compiles, through the same container/host wrapper as the node's real
-command. Resolution therefore sees the same engine, task code, worker
-interpreter, and import paths that execution will see: a ``worker_python`` or
-engine that exists only inside the node's container resolves there too.
-
-Usage::
-
-    python -m magnet.backends.aiq_evals.cli.resolve_node \\
-        --request '<EvaluationRequest JSON>' [--worker_python PY] \\
-        [--import_source PATH] [--allow_external_symlinks True]
-
-Prints one JSON object on the last line of stdout: ``measurement_identity``
-(``digest``, ``reusable``, ``unknown_reasons``) and ``import_identity`` (the
-content identity of ``import_source``, or null). Exits non-zero with the
-error on stderr when resolution fails.
+The generated job invokes this in its target host/container/worker environment.
+Command construction never invokes it. Legacy one-shot callers remain supported.
+The runtime request handoff carries serving facts bound by the executing gate.
+Print one JSON resolution on the final stdout line; no model evaluation occurs.
 """
 from __future__ import annotations
 
@@ -37,6 +25,7 @@ class ResolveNodeCLI(kwconf.Config):
 
     request = kwconf.Value(None, required=True, parser=str, help='EvaluationRequest as JSON')
     worker_python = kwconf.Value(None, parser=str, help='engine worker interpreter')
+    runtime_request_file = kwconf.Value(None, parser=str, help='execution-time request handoff file')
     import_source = kwconf.Value(None, parser=str, help='native artifacts the node imports')
     allow_external_symlinks = kwconf.Value(False, isflag=True, help='follow links out of the import source')
 
@@ -74,8 +63,10 @@ def resolve(request_dict: dict, worker_python: str | None, import_source: str | 
 def main(argv: list[str] | None = None) -> int:
     args = ResolveNodeCLI.cli(argv=True if argv is None else argv, strict=True, special_options=False)
     try:
+        request = (json.loads(Path(args.runtime_request_file).read_text())['request']
+                   if args.runtime_request_file else json.loads(args.request))
         payload = resolve(
-            json.loads(args.request),
+            request,
             args.worker_python or None,
             args.import_source or None,
             bool(args.allow_external_symlinks),

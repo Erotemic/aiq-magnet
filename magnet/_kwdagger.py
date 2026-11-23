@@ -312,14 +312,8 @@ class KWDaggerProcessor:
             run=not dry_run,
             **schedule_options,
         )
-        # aiq-magnet-evals EvaluationNodes resolve their measurement identity while the
-        # schedule compiles, before kwdagger hashes them into node ids -- but
-        # never in a dry run, which must not execute task code (integration
-        # plan M3/M9).
-        from magnet.backends.aiq_evals import preflight_scope
-
-        with preflight_scope(enabled=not dry_run):
-            self.request_dag, self.queue = build_schedule(kwd_config)
+        # Scheduling renders declared work. Native resolution belongs to jobs.
+        self.request_dag, self.queue = build_schedule(kwd_config)
 
     def _coerce_aggregate_pipeline(self, node_name: str | None = None) -> Any:
         """Configure the logical pipeline used by kwdagger aggregate loading."""

@@ -204,7 +204,7 @@ def test_reuse_selector_change_and_stale_marker(tmp_path):
     evaluate(helm_recipe(tmp_path, select={'metric': 'quasi_exact_match', 'group': 'test', 'score': None}), out)
     records = [json.loads(p.read_text()) for p in evaluations(out)]
     assert len(records) == 2
-    assert sorted(e['action'] for e in records) == ['executed', 'reused']
+    assert sorted(e['action'] for e in records) == ['reused', 'reused']
     assert len({e['measurement_identity']['digest'] for e in records}) == 1
     assert len(store_attempts(out)) == 1
 
@@ -223,8 +223,9 @@ def test_non_reusable_identity_always_executes(tmp_path):
     evaluate(fpath, out)
     evaluate(fpath, out)
     records = [json.loads(p.read_text()) for p in evaluations(out)]
-    assert len(records) == 2  # a nonce in the node id: never skipped as done
-    assert all(e['preflight_identity'].startswith('unresolved-') for e in records)
+    assert len(records) == 1  # declared work stays at one node; runtime owns attempts
+    assert len(store_attempts(out)) == 2
+    assert all(e['preflight_identity'] is None for e in records)
     assert all(not e['measurement_identity']['reusable'] for e in records)
 
 
@@ -244,8 +245,8 @@ def edited_task():
 
 @needs_inspect
 def test_task_code_change_reruns_the_node(tmp_path):
-    # M3: kwdagger's node identity follows the resolved measurement, so editing
-    # the task file (not the recipe) schedules a new native evaluation.
+    # Declared work keeps its outer node ID; runtime task changes produce a new
+    # native measurement instead of reusing the previous stored evaluation.
     task_file = tmp_path / 'edited_task.py'
     task_file.write_text(TASK_SOURCE.format(marker='v1'))
     algo = {
@@ -266,8 +267,8 @@ def test_task_code_change_reruns_the_node(tmp_path):
     _, card = evaluate(fpath, out)
     records = [json.loads(p.read_text()) for p in evaluations(out)]
     assert card.result == 'VERIFIED'
-    assert len(records) == 2 and len(store_attempts(out)) == 2
-    assert len({r['measurement_identity']['digest'] for r in records}) == 2
+    assert len(records) == 1 and len(store_attempts(out)) == 2
+    assert len(list((out / '_kwdagger/_aiq_evals_store/runs').rglob('RUN_COMPLETE'))) == 2
     assert all(r['action'] == 'executed' for r in records)
 
 
@@ -297,60 +298,41 @@ def _node(**algo):
     return node
 
 
-def test_measurement_identity_is_computed_never_configured(monkeypatch):
-    # A recipe cannot supply it ...
-    with pytest.raises(ValueError, match='computed by preflight'):
+def test_runtime_identities_are_not_resolved_during_configuration(monkeypatch):
+    with pytest.raises(ValueError, match='runtime'):
         _node(measurement_identity='f' * 64)
-    with pytest.raises(ValueError, match='computed by preflight'):
+    with pytest.raises(ValueError, match='runtime'):
         _node(import_identity='e' * 64)
 
-    # ... and a value arriving through configuration (e.g. a matrix) is replaced.
-    node = EvaluationNode(name='evaluate', algo_params={
-        'engine': 'helm', 'task': 'simple_mcqa', 'models': [{'model': 'simple/model1', 'revision': 'r'}],
-    })
+    def forbidden(*args, **kwargs):
+        raise AssertionError('a configuration getter must not resolve native work')
+
+    monkeypatch.setattr(node_mod, 'run_preflight', forbidden)
+    node = _node()
     node.configure({'measurement_identity': 'f' * 64, 'import_identity': 'e' * 64})
-    assert node.final_algo_config['measurement_identity'] == node_mod.DRY_RUN_IDENTITY
-    assert node.final_algo_config['import_identity'] is None
-
-    calls = []
-
-    def fake_preflight(command, timeout=None):
-        calls.append(command)
-        return {'measurement_identity': {'digest': 'a' * 64, 'reusable': True, 'unknown_reasons': []},
-                'import_identity': None}
-
-    monkeypatch.setattr(node_mod, 'run_preflight', fake_preflight)
-    with preflight_scope(True):
-        assert node.final_algo_config['measurement_identity'] == 'a' * 64
-        assert node.final_algo_config['measurement_identity'] == 'a' * 64
-    assert len(calls) == 1  # memoized within one schedule
-    with preflight_scope(True):
-        node.final_algo_config
-    assert len(calls) == 2  # every schedule re-resolves
+    with preflight_scope(True):  # compatibility context does not enable execution
+        assert node.final_algo_config['measurement_identity'] is None
+        assert node.final_algo_config['import_identity'] is None
+        assert node.final_algo_config['endpoint_provenance'] is None
+        node.process_id
+        node.command
 
 
-def test_preflight_runs_through_the_node_container(monkeypatch):
-    commands = []
+def test_native_resolution_command_can_be_rendered_for_an_absent_container(monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError('constructing a command must not execute it')
 
-    def fake_preflight(command, timeout=None):
-        commands.append(command)
-        return {'measurement_identity': {'digest': 'b' * 64, 'reusable': True, 'unknown_reasons': []},
-                'import_identity': None}
-
-    monkeypatch.setattr(node_mod, 'run_preflight', fake_preflight)
+    monkeypatch.setattr(node_mod, 'run_preflight', forbidden)
     node = _node()
     node.config['worker_python'] = '/opt/engine/bin/python'
     node.container_image = 'engine-image:latest'
-    with preflight_scope(True):
-        node.final_algo_config
-    (command,) = commands
-    # Same wrapper as the node's own command: resolution sees the container's
-    # engine and the container-only worker interpreter.
+    command = node.preflight_command(node.final_algo_config)
     assert command.startswith('docker run')
     assert 'engine-image:latest' in command
     assert 'magnet.backends.aiq_evals.cli.resolve_node' in command
     assert '--worker_python=/opt/engine/bin/python' in command
     assert node.command.startswith('docker run')
+
 
 
 # --- M4: evidence is recomputed from the validated run, never trusted ---------
@@ -591,7 +573,7 @@ def test_preflight_is_bounded_and_kills_its_process_group(tmp_path):
     stat = Path(f'/proc/{pid}/stat')
     try:
         state = stat.read_text().split()[2]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         state = None
     assert state in (None, 'Z')
 
@@ -675,8 +657,8 @@ def test_rows_are_never_served_from_a_stale_cache(tmp_path):
 
 @needs_helm
 def test_preflight_does_not_need_secret_values(tmp_path, monkeypatch):
-    # A leased node's key exists only inside its lease; scheduling resolves
-    # before that, and identity never needs the value.
+    # A leased node's key exists only inside its lease; execution-time native
+    # resolution can happen before acquiring it and never needs the value.
     from magnet.backends.aiq_evals.cli import resolve_node
 
     monkeypatch.delenv('AIQ_LEASED_KEY', raising=False)
@@ -725,13 +707,15 @@ def test_editing_imported_native_files_in_place_reruns_the_node(tmp_path):
     evaluate(fpath, out)
     assert len(evaluations(out)) == 1
 
-    # Same path, edited content: new import identity -> new node -> new value.
+    # Same declared path: the runtime import gets a new identity and value,
+    # while the scheduler node remains unchanged.
     _set_helm_exact_match(source, 0.75)
     recipe, card = evaluate(fpath, out, )
     rows = sorted(recipe_rows(recipe), key=lambda r: r['row']['metrics.evaluate.score'])
-    assert [r['row']['metrics.evaluate.score'] for r in rows] == [0.25, 0.75]
-    assert rows[1]['row']['metrics.evaluate.action'] == 'imported'
-    assert len({r['row']['metrics.evaluate.import_identity'] for r in rows}) == 2
+    assert [r['row']['metrics.evaluate.score'] for r in rows] == [0.75]
+    assert rows[0]['row']['metrics.evaluate.action'] == 'imported'
+    assert rows[0]['row']['metrics.evaluate.import_identity'] != first['row']['metrics.evaluate.import_identity']
+    assert len(list((out / '_kwdagger/_aiq_evals_store/imports').rglob('RUN_COMPLETE'))) == 2
     # The requested (current) evidence is the new content only.
     (verdict,) = run_verdicts(latest_run_dir(out))
     assert verdict['symbols']['metrics.evaluate.score'] == 0.75
@@ -871,8 +855,7 @@ def test_leasing_is_decided_by_a_gate_when_the_node_runs(tmp_path, monkeypatch):
     for name in ('OPENAI_BASE_URL', 'OPENAI_API_KEY', 'INFER_STACK_ENDPOINT_SMOL_135',
                  'INFER_STACK_ENDPOINT_JUDGE_ALIAS'):
         assert f'-e {name} ' in child, name
-    # Before reusing, the gate re-resolves where preflight does (the container),
-    # never inside the lease.
+    # The executing gate resolves in the target container, before any lease.
     (resolve,) = [tok[len('--resolve_command='):] for tok in tokens if tok.startswith('--resolve_command=')]
     assert resolve.startswith('docker run') and 'magnet.backends.aiq_evals.cli.resolve_node' in resolve
     assert 'infer-stack' not in shlex.split(resolve.replace('\\\n', ' '))

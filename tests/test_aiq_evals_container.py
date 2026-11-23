@@ -1,9 +1,8 @@
-"""Containerized EvaluationNodes: preflight resolves where execution runs (M3/M8).
+"""Containerized EvaluationNodes resolve native facts only when jobs execute.
 
 Runs a real ``docker run``. The engine worker interpreter is mounted only
-inside the container (at ``/opt/aiq-inspect-worker``), so a preflight on the
-scheduling host could not resolve it; the node must preflight through its
-container wrapper, exactly like its command.
+inside the container (at ``/opt/aiq-inspect-worker``). Command construction
+requires neither that path nor the native engine on the planning machine.
 
 Needs ``MAGNET_TEST_DOCKER=1``, a usable ``docker``, ``$AIQ_EVALS_INSPECT_PYTHON``,
 and ``$MAGNET_TEST_CONTAINER_VENV``: a MAGNET environment (with
@@ -84,12 +83,12 @@ def test_container_only_worker_resolves_and_executes_in_the_container(tmp_path):
     assert card.result == 'VERIFIED'
     (record_path,) = evaluations(out)
     record = json.loads(record_path.read_text())
-    # Preflight (in the container) and execution (in the container) agree.
-    assert record['preflight_identity'] == record['measurement_identity']['digest']
+    # No native identity was needed to render this command.
+    assert record['preflight_identity'] is None
     assert record['measurement_identity']['reusable']
     (row,) = recipe_rows(recipe)
     assert row['row']['metrics.evaluate.score'] == 1.0
 
-    # A second schedule preflights in the container again and reuses the node.
+    # A second execution reuses the native measurement without inference.
     _, again = evaluate(fpath, out, container_settings=settings)
     assert again.result == 'VERIFIED' and len(evaluations(out)) == 1

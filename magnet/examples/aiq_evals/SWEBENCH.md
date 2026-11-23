@@ -68,13 +68,23 @@ generated node; completion/cancellation still releases them. An optional
 `--timeout_seconds` bounds one evaluation worker without changing the benchmark
 score or retrying it internally.
 
-Leased nodes query configured scientific serving provenance before scheduling,
-bind its digest as the model cache token, and verify the lease's public JSON
-descriptor before inference. A catalog change also prevents reuse of an old
-queued measurement. Placement, lease IDs, endpoint URLs and credentials are
-operational. Mutable weights, images or other unresolved inputs disable reuse.
-An explicit conflicting cache token is rejected; `verify_serving_provenance:
-false` is the explicit opt-out for caller-owned identity assertions.
+Scheduling renders declared requests without importing engines, querying
+infer-stack or running native workers. The target interpreter and container
+need not exist on the planning machine. Kwdagger node IDs describe the declared
+work; native measurement identities belong to the evaluator's result store.
+
+When a leased job executes, its gate binds serving provenance, resolves in the
+target environment, and checks that store. Completed native measurements are
+reused without acquiring a model lease. Otherwise the leased realization is
+checked against those runtime facts. Mutable or unresolved scientific inputs
+disable native reuse. The request handoff file lives in the already-shared
+node output directory and contains no credentials. Explicit conflicting model
+cache tokens still fail at execution; `verify_serving_provenance: false` retains
+caller-owned identity assertions.
+
+Existing native stores and old generated commands remain supported. Switching
+to declared-config node IDs can change the outer node directory, while the
+same runtime request still reuses its original native bundle.
 
 For outer Docker workers, mount the worker environment and its Python runtime,
 both source checkouts, task inputs, output/store directories, Docker CLI/plugins

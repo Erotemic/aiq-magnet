@@ -78,3 +78,21 @@ def verify_lease(roles: dict, expected: dict, environ=None) -> None:
     for role, alias in roles.items():
         if alias not in actual or validate_provenance(actual[alias]) != expected.get(role):
             raise ValueError(f'leased serving provenance for role {role!r} differs from scheduling')
+
+
+def lease_provenance(roles: dict, environ=None) -> dict:
+    """Observed serving facts available only inside the executing lease."""
+    environ = os.environ if environ is None else environ
+    path = environ.get('INFER_STACK_ENDPOINT_DESCRIPTOR')
+    if not path:
+        raise ValueError('lease supplied no public endpoint descriptor')
+    descriptor = json.loads(Path(path).read_text())
+    if descriptor.get('lease_id') != environ.get('INFER_STACK_LEASE_ID'):
+        raise ValueError('endpoint descriptor belongs to a different lease')
+    actual = descriptor.get('serving_provenance') or {}
+    facts = {}
+    for role, alias in roles.items():
+        if alias not in actual:
+            raise ValueError(f'lease supplied no serving provenance for {alias!r}')
+        facts[role] = validate_provenance(actual[alias])
+    return facts

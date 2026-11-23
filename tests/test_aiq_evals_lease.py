@@ -263,7 +263,7 @@ def test_inspect_primary_and_grader_share_one_multi_endpoint_lease(tmp_path, lea
 @needs_repo
 @needs(INSPECT_OPENAI_PYTHON is not None, 'needs $AIQ_EVALS_INSPECT_OPENAI_PYTHON')
 @pytest.mark.parametrize('change_at', ['catalog', 'lease'])
-def test_inspect_serving_drift_stays_unscored(tmp_path, lease_env, monkeypatch, change_at):
+def test_inspect_runtime_catalog_and_lease_drift(tmp_path, lease_env, monkeypatch, change_at):
     """A real CLI/lease handoff must reject changed launch facts before inference."""
     import yaml
 
@@ -300,6 +300,15 @@ def test_inspect_serving_drift_stays_unscored(tmp_path, lease_env, monkeypatch, 
         shim.write_text(shim.read_text().replace('  shift\n',
             '  shift\n' + f'  cp {shlex.quote(str(new_catalog))} {shlex.quote(str(catalog))}\n'))
     process = subprocess.run(['bash', '-c', command], text=True, capture_output=True)
+    if change_at == 'catalog':
+        # The planner did not observe this environment. Adopt the facts that
+        # exist when the command actually runs, and record them in its result.
+        assert process.returncode == 0, process.stdout + process.stderr
+        result = json.loads((tmp_path / 'node/evaluation.json').read_text())
+        assert result['endpoint_provenance']['primary']['payload']['quantization'] == 'awq'
+        assert result['declared_request']['models'][0]['cache_token'] is None
+        assert result['request']['models'][0]['cache_token'] == result['endpoint_provenance']['primary']['digest']
+        return
     assert process.returncode == 3, process.stdout + process.stderr
     assert not (tmp_path / 'node/evaluation.json').exists()
     summary = json.loads((tmp_path / 'node/attempt_summary.json').read_text())

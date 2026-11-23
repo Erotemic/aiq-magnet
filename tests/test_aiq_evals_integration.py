@@ -196,7 +196,7 @@ def test_reuse_selector_change_and_stale_marker(tmp_path):
     recipe, _ = evaluate(fpath, out)
     assert len(evaluations(out)) == 1 and len(store_attempts(out)) == 1
 
-    # Same request: kwdagger skips the node (it still validates as done).
+    # Same request: kwdagger skips by output existence without native resolution.
     evaluate(fpath, out)
     assert len(evaluations(out)) == 1 and len(store_attempts(out)) == 1
 
@@ -204,24 +204,29 @@ def test_reuse_selector_change_and_stale_marker(tmp_path):
     evaluate(helm_recipe(tmp_path, select={'metric': 'quasi_exact_match', 'group': 'test', 'score': None}), out)
     records = [json.loads(p.read_text()) for p in evaluations(out)]
     assert len(records) == 2
-    assert sorted(e['action'] for e in records) == ['reused', 'reused']
+    assert sorted(e['action'] for e in records) == ['executed', 'reused']
     assert len({e['measurement_identity']['digest'] for e in records}) == 1
     assert len(store_attempts(out)) == 1
 
-    # A stale marker cannot hide a broken run: tamper with the canonical run.
+    # Readout detects tampering; scheduling does not audit native artifacts.
     run_path = Path(records[0]['run_path'])
     (run_path / 'native' / 'injected.txt').write_text('tamper\n')
     evaluate(fpath, out)
+    assert len(store_attempts(out)) == 1
+    assert all(not r['row']['metrics.evaluate.eligible'] for r in recipe_rows(recipe))
+    evaluate(fpath, out, cache=False)
     assert len(store_attempts(out)) == 2
     assert len(recipe_rows(recipe)) == 2
 
 
 @needs_helm
-def test_non_reusable_identity_always_executes(tmp_path):
+def test_non_reusable_native_identity_requires_explicit_node_reexecution(tmp_path):
     out = tmp_path / 'out'
     fpath = helm_recipe(tmp_path, algo={'data_revision': None})
     evaluate(fpath, out)
     evaluate(fpath, out)
+    assert len(store_attempts(out)) == 1
+    evaluate(fpath, out, cache=False)
     records = [json.loads(p.read_text()) for p in evaluations(out)]
     assert len(records) == 1  # declared work stays at one node; runtime owns attempts
     assert len(store_attempts(out)) == 2
@@ -244,9 +249,9 @@ def edited_task():
 
 
 @needs_inspect
-def test_task_code_change_reruns_the_node(tmp_path):
-    # Declared work keeps its outer node ID; runtime task changes produce a new
-    # native measurement instead of reusing the previous stored evaluation.
+def test_explicit_refresh_resolves_changed_native_task_code(tmp_path):
+    # Undeclared task edits do not invalidate the output-existence check.
+    # An explicit refresh resolves the changed native identity at execution.
     task_file = tmp_path / 'edited_task.py'
     task_file.write_text(TASK_SOURCE.format(marker='v1'))
     algo = {
@@ -264,7 +269,9 @@ def test_task_code_change_reruns_the_node(tmp_path):
     evaluate(fpath, out)
     assert len(evaluations(out)) == 1 and len(store_attempts(out)) == 1
     task_file.write_text(TASK_SOURCE.format(marker='v2'))
-    _, card = evaluate(fpath, out)
+    evaluate(fpath, out)
+    assert len(store_attempts(out)) == 1
+    _, card = evaluate(fpath, out, cache=False)
     records = [json.loads(p.read_text()) for p in evaluations(out)]
     assert card.result == 'VERIFIED'
     assert len(records) == 1 and len(store_attempts(out)) == 2
@@ -693,7 +700,7 @@ def _set_helm_exact_match(source, value):
 
 
 @needs_helm
-def test_editing_imported_native_files_in_place_reruns_the_node(tmp_path):
+def test_explicit_refresh_imports_edited_native_files(tmp_path):
     source = _helm_native_run(tmp_path)
     _set_helm_exact_match(source, 0.25)
     out = tmp_path / 'out'
@@ -707,10 +714,12 @@ def test_editing_imported_native_files_in_place_reruns_the_node(tmp_path):
     evaluate(fpath, out)
     assert len(evaluations(out)) == 1
 
-    # Same declared path: the runtime import gets a new identity and value,
-    # while the scheduler node remains unchanged.
+    # Same declared path stays complete until explicitly refreshed. The new
+    # acquisition then records the edited content under its native identity.
     _set_helm_exact_match(source, 0.75)
-    recipe, card = evaluate(fpath, out, )
+    evaluate(fpath, out)
+    assert recipe_rows(recipe)[0]['row']['metrics.evaluate.score'] == 0.25
+    recipe, card = evaluate(fpath, out, cache=False)
     rows = sorted(recipe_rows(recipe), key=lambda r: r['row']['metrics.evaluate.score'])
     assert [r['row']['metrics.evaluate.score'] for r in rows] == [0.75]
     assert rows[0]['row']['metrics.evaluate.action'] == 'imported'

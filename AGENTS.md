@@ -17,6 +17,13 @@ Generated commands resolve native facts and obtain evaluations when they run
 in their execution environment. Preserve the evaluator's native result store
 and its reusable measurements independently of kwdagger node IDs. Keep legacy
 cards and previously rendered commands compatible while correcting the path.
+
+Completed nodes use kwdagger's cheap file-existence checks and shell `test -e`.
+Never force them pending to resolve native identity, inspect serving state or
+audit native artifacts on every resume. Native-store reuse is for commands
+that actually execute; evidence validation belongs to readout or an explicit
+audit. Undeclared input changes require an explicit refresh or declared revision.
+
 Read kwdagger's planning_execution_boundary design note before changing this
 integration. A safeguard that prevents command construction on another
 machine is a layering bug, even when motivated by provenance or cache reuse.

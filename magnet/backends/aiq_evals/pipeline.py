@@ -17,6 +17,9 @@ Planning and runtime identity:
 * With leasing, the executing gate binds serving facts and resolves the request
   before checking the store. A cached result needs no model lease. The gate's
   runtime handoff file is shared with its container/worker and leased child.
+* Completed nodes use kwdagger's output-existence check and shell ``test -e``.
+  They do not launch a Python guard or native resolver. To refresh changed
+  undeclared inputs, request execution explicitly or declare a new revision.
 * Legacy rendered commands with explicit identity arguments remain supported.
 
 Evidence (M4/M5): ``evaluation.json`` records *which* run and *how* to project
@@ -450,32 +453,8 @@ class EvaluationNode(MagnetProcessNode):
             expected['import_identity'] = config['import_identity']
         return expected
 
-    def _evaluation_fpath(self) -> Any:
-        paths = self.final_out_paths
-        return paths.get(str(self.primary_out_key)) if paths else None
-
-    @property
-    def does_exist(self) -> bool:
-        """Done only if the recorded run still validates and matches this node."""
-        # The executing command owns native-cache lookup. Declared node IDs
-        # do not pretend to encode an unobserved runtime environment.
-        if not self._final().get('measurement_identity'):
-            return False
-        fpath = self._evaluation_fpath()
-        return fpath is not None and evaluation_is_valid(Path(fpath), self.expected_evaluation())
-
-    def test_is_computed_command(self) -> str | None:
-        """The job-level "done" guard validates the run, not just the marker file."""
-        fpath = self._evaluation_fpath()
-        if fpath is None:
-            return None
-        expected = json.dumps(self.expected_evaluation(), sort_keys=True)
-        # Keep the scheduling record, but reach the gate for the catalog check.
-        pending = ' --force_pending=True' if not self._final().get('measurement_identity') else ''
-        return self._wrap_interpreter(
-            'python -m magnet.backends.aiq_evals.cli.check_done '
-            f'{shlex.quote(str(fpath))} --expected={shlex.quote(expected)}{pending}'
-        )
+    # Inherit kwdagger's cheap output-existence checks. Native resolution and
+    # artifact validation are execution/readout work, never completion guards.
 
     def _wrap_interpreter(self, command: str) -> str:
         if self.containerization_is_enabled():
@@ -527,8 +506,8 @@ def evaluation_is_valid(fpath: Path, expected: dict[str, Any] | None = None) -> 
     """Whether ``evaluation.json`` references a valid run, as ``expected``.
 
     ``expected`` (from :meth:`EvaluationNode.expected_evaluation`) pins the
-    projection (selector, coverage policy) and identities the node was
-    scheduled with, so an edited ``evaluation.json`` makes the node not done.
+    projection (selector, coverage policy) and legacy identities for explicit
+    validation. This helper is not used by new scheduling completion checks.
     """
     if not Path(fpath).is_file():
         return False
@@ -548,8 +527,8 @@ CHECK_DONE_MODULE = 'magnet.backends.aiq_evals.cli.check_done'
 def scheduled_record(node_dpath: Any) -> dict[str, Any] | None:
     """What kwdagger scheduled an EvaluationNode directory with (its ``invoke.sh``).
 
-    Returns ``expected`` (the done-check's selector, coverage policy, and
-    computed identities), ``request``, and the store the node acquires from
+    Returns ``expected`` (the declared selector/policy and any legacy pinned
+    identities), ``request``, and the store the node acquires from
     (``store``, mapped onto this directory's tree), or ``None`` without a
     usable record. See :mod:`magnet.backends.aiq_evals.scheduled`.
     """
@@ -557,13 +536,23 @@ def scheduled_record(node_dpath: Any) -> dict[str, Any] | None:
 
     args = invocation_args(node_dpath)
     run_args, done_args = args.get(RUN_NODE_MODULE), args.get(CHECK_DONE_MODULE)
-    if not run_args or not done_args or 'expected' not in done_args:
+    if not run_args:
         return None
     try:
-        record: dict[str, Any] = {
-            'expected': json.loads(done_args['expected']),
-            'request': json.loads(run_args['request']),
-        }
+        if done_args and 'expected' in done_args:
+            expected = json.loads(done_args['expected'])  # legacy invocation
+        else:
+            from magnet.backends.aiq_evals.projection import normalize_selector
+
+            expected = {
+                'select': normalize_selector(json.loads(run_args['select']) if run_args.get('select') else None),
+                'coverage_policy': run_args.get('coverage_policy') or 'complete',
+            }
+            for key in COMPUTED_KEYS:
+                value = run_args.get(key)
+                if value:
+                    expected[key] = json.loads(value) if key == 'endpoint_provenance' else value
+        record: dict[str, Any] = {'expected': expected, 'request': json.loads(run_args['request'])}
     except (KeyError, json.JSONDecodeError):
         return None
     if 'store_dpath' in run_args and 'out_dpath' in run_args:

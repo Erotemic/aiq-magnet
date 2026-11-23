@@ -73,6 +73,15 @@ infer-stack or running native workers. The target interpreter and container
 need not exist on the planning machine. Kwdagger node IDs describe the declared
 work; native measurement identities belong to the evaluator's result store.
 
+Completed node outputs use kwdagger's normal file-existence checks and shell
+`test -e` guards. They start no Python resolver or native artifact audit.
+Readout validates evidence separately. A changed declared revision creates new
+work; to refresh undeclared runtime/input changes explicitly, use
+`--cache=False --skip_existing=False`. That executes the acquisition command;
+the native store may still satisfy it without inference when its identity
+is unchanged. A completed scheduler output does not promise automatic
+invalidation for changes outside its declared configuration.
+
 When a leased job executes, its gate binds serving provenance, resolves in the
 target environment, and checks that store. Completed native measurements are
 reused without acquiring a model lease. Otherwise the leased realization is

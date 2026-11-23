@@ -177,3 +177,40 @@ ordinary 500-request schedule wrote its commands in 1.52 seconds with native
 imports, catalog queries and subprocess creation forbidden. A real retained
 native benchmark bundle was reused through the new runtime gate with the same
 measurement identity and no inference. No GPU workload was run here.
+
+
+## 2026-11-23: completed nodes use ordinary file-existence checks
+
+Model: GPT-6 (Codex); exact serving variant/configuration unavailable.
+
+The offline-planning correction still returned false from does_exist and
+rendered force_pending=True in the Python done guard. Every resume therefore
+started native resolution and artifact validation for already-completed nodes.
+Moving that cost into jobs fixed the planning environment dependency but did
+not restore kwdagger's completion semantics.
+
+Removed both overrides. EvaluationNode inherits ProcessNode's output-existence
+check and shell test -e guard. No additional cache or validation option was
+added. New scheduling records derive the declared selector/policy from the
+acquisition command; old records containing check_done remain readable. The
+legacy validation CLI remains available for previously rendered jobs. Evidence
+readout still validates stored artifacts independently of scheduling.
+
+Undeclared task/import/environment edits no longer trigger automatic refresh.
+Declare a new revision or request execution using the existing cache controls;
+native store reuse is decided when that command runs. Integration cases now
+exercise explicit refresh, non-reusable native requests, and invalid evidence
+readout under this contract. Completion checks are tested with result contents,
+subprocesses, native resolution and validation inaccessible.
+
+Prepared on fix/file-completion-checks in an isolated worktree because a queue
+is active. A real 500-request matrix with synthetic completion files in a
+separate artifact tree compiled/skipped all nodes in 0.46 seconds, with zero
+native calls, subprocesses or result-content reads. The benchmark store was
+not modified. Both submission-time skipping and shell-guard caching pass.
+
+Validation: integration, example, lease, container and offline-planning suite
+passes 69 cases with seven optional cases unavailable. Native task/import
+refresh, tampered evidence readout, real tmux workers, native store reuse and
+legacy command/readout compatibility remain exercised. Focused Ruff and
+whitespace checks pass. The active checkout was not changed.

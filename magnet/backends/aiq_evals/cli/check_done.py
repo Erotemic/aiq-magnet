@@ -1,9 +1,7 @@
-"""Exit 0 iff an EvaluationNode's primary output references a valid succeeded run.
+"""Legacy native-artifact validation command for previously rendered jobs.
 
-kwdagger guards each job with a "done" test; a bare file-existence test would
-let a stale ``evaluation.json`` hide a missing, failed, or tampered run.
-``--expected`` (JSON) pins the selector, coverage policy, and identities the
-node was scheduled with.
+New EvaluationNode jobs use kwdagger's shell file-existence guard. Retain this
+CLI for old scripts and explicit validation; it is not a scheduling fast path.
 """
 import json
 from pathlib import Path

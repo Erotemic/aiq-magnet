@@ -214,3 +214,23 @@ passes 69 cases with seven optional cases unavailable. Native task/import
 refresh, tampered evidence readout, real tmux workers, native store reuse and
 legacy command/readout compatibility remain exercised. Focused Ruff and
 whitespace checks pass. The active checkout was not changed.
+
+
+## 2026-11-23 23:02:35 -0500
+
+Model: GPT-6 (Codex; exact serving variant unavailable).
+
+The user asked to consolidate completed development on main. Merged the
+current canonical upstream with native-result integration and the completed
+file-existence completion fix in an isolated worktree. Schema conflicts
+combined two legitimate requirements: legacy cards require a claim, while
+measurement recipes may use readouts without one. The required claim now
+belongs to the legacy schema, leaving common fields independent of that
+backend choice. Retained both optional-integration and version-dependent type
+configuration. This preserves measured readouts without reintroducing mutable
+field narrowing.
+
+Validation: 137 targeted schema, evaluator, measurement, offline-planning,
+backend-integration and utility tests passed; 14 optional tests skipped.
+Schema type checking passed. The merge was prepared separately from the
+active source checkout.

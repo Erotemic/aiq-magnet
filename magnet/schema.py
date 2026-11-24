@@ -206,7 +206,30 @@ class TheorySchema(BaseModel):
     model_config = {'extra': 'forbid'}
 
 
-class EvaluationCardSchema(BaseModel):
+class _EvaluationCardFields(BaseModel):
+    """Fields common to the legacy evaluation card and the new recipe."""
+
+    # --- Required ---
+    title: str
+    description: str
+    version: str = Field(coerce_numbers_to_str=True)
+    organizations: list[str]
+    submitter: SubmitterSchema
+    tags: list[str]
+    links: list[LinkSchema]
+
+    # --- Recommended ---
+    category: str | None = None
+
+    # --- Evaluation configuration ---
+    claim_aggregation_strategy: ClaimAggregationStrategySchema | None = None
+    symbols: dict[str, SymbolSchema] | None = None
+
+    # --- how the code relates to a theoretical object (optional) ---
+    theory: TheorySchema | None = None
+
+
+class EvaluationCardSchema(_EvaluationCardFields):
     """
     Schema for an Evaluation Card YAML.
 
@@ -245,25 +268,7 @@ class EvaluationCardSchema(BaseModel):
         'Arithmetic'
     """
 
-    # --- Required ---
-    title: str
-    description: str
     claim: ClaimSchema
-    version: str = Field(coerce_numbers_to_str=True)
-    organizations: list[str]
-    submitter: SubmitterSchema
-    tags: list[str]
-    links: list[LinkSchema]
-
-    # --- Recommended ---
-    category: str | None = None
-
-    # --- Evaluation configuration ---
-    claim_aggregation_strategy: ClaimAggregationStrategySchema | None = None
-    symbols: dict[str, SymbolSchema] | None = None
-
-    # --- how the code relates to a theoretical object (optional) ---
-    theory: TheorySchema | None = None
 
     # --- Backend (at most one) ---
     kwdagger: KWDaggerSchema | None = None
@@ -300,7 +305,7 @@ class NewEvaluationKWDaggerSchema(KWDaggerSchema):
 RECIPE_NAME_PATTERN = r'^[A-Za-z0-9_-]+$'
 
 
-class NewEvaluationRecipeSchema(EvaluationCardSchema):
+class NewEvaluationRecipeSchema(_EvaluationCardFields):
     """
     Schema for a recipe consumed by ``magnet evaluate_new``.
 

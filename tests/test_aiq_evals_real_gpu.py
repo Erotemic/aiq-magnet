@@ -462,4 +462,3 @@ def test_olmo_real_gpu_agent_executes_tool(real_gpu_context):
         worker_label='olmo',
         require_tool_execution=True,
     )
-
